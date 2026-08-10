@@ -81,6 +81,46 @@ function M.new()
   }, M)
 end
 
+local function addIdentity(list, value)
+  if not (list and value) then return end
+  for _, row in ipairs(list) do if row == value then return end end
+  list[#list + 1] = value
+end
+
+local function followerInteractionEntity(npc)
+  return type(npc) == "table" and npc.mmoAvatar ~= true
+    and (npc.pikachuFollower == true or npc.pokepcTrailer == true
+      or npc.wildsFollower == true or npc.mmoRemoteFollower == true
+      or npc.isFollower == true or npc.follower == true)
+end
+
+-- OverworldController:npcAtCell resolves an A press by the first matching
+-- entry. Followers may legally share a remote player's cell, so ordinary map
+-- NPCs remain first, remote players come next, and followers come last. The
+-- renderer-owned entity order is deliberately untouched.
+function M.prioritizeInteractions(ow)
+  local npcs = type(ow) == "table" and ow.npcs or nil
+  if type(npcs) ~= "table" or #npcs < 2 then return false end
+  local ordinary, avatars, followers = {}, {}, {}
+  for _, npc in ipairs(npcs) do
+    if type(npc) == "table" and npc.mmoAvatar == true then
+      avatars[#avatars + 1] = npc
+    elseif followerInteractionEntity(npc) then
+      followers[#followers + 1] = npc
+    else
+      ordinary[#ordinary + 1] = npc
+    end
+  end
+  local changed, index = false, 1
+  for _, group in ipairs({ ordinary, avatars, followers }) do
+    for _, npc in ipairs(group) do
+      if npcs[index] ~= npc then changed = true end
+      npcs[index], index = npc, index + 1
+    end
+  end
+  return changed
+end
+
 -- NPC.new asserts on a sprite the data catalog does not carry, and that
 -- assert would fire inside the engine's own spawn path where this mod
 -- cannot catch it.  Checking first turns an unknown sprite into a
@@ -259,12 +299,83 @@ function M:despawn(playerId)
   M.undecorate(npc)
   av.npc = nil
   mod.world:removeNpc(av.npcId)
+
+  -- removeNpc clears the active NPC/entity lists, but an engine neighbor
+  -- snapshot can still hold the same table in ghosts until the next rebuild.
+  -- Purge only the runtime id owned by this avatar so PART, battle entry, and
+  -- seam changes cannot leave a frozen duplicate behind.
+  local ow = mod.world.overworld and mod.world:overworld() or nil
+  if ow then
+    for i = #(ow.ghosts or {}), 1, -1 do
+      local ghost = ow.ghosts[i]
+      if ghost and ghost.npc and ghost.npc.id == av.npcId then
+        table.remove(ow.ghosts, i)
+      else
+        for j = #((ghost and ghost.peers) or {}), 1, -1 do
+          if ghost.peers[j] and ghost.peers[j].id == av.npcId then
+            table.remove(ghost.peers, j)
+          end
+        end
+      end
+    end
+  end
   return true
 end
 
 function M:clear()
   for id in pairs(self.spawned) do self:despawn(id) end
   self.spawned = {}
+end
+
+-- A voxel overworld battle saves and later restores the overworld's entity
+-- tables. If MMO removed an avatar while the battle was active, that private
+-- snapshot can resurrect the old table beside the current roster copy. The
+-- transient marker may already be gone, so the owned runtime definition is
+-- the durable identity.
+local function ownedAvatar(npc)
+  if type(npc) ~= "table" then return false end
+  if npc.mmoAvatar == true then return true end
+  local def = npc.def
+  return type(def) == "table" and def.runtime == true and def.owner == mod.id
+    and type(def.name) == "string" and def.name:match("^mmo_.+") ~= nil
+end
+
+local function removeOrphans(list, keep)
+  for i = #(list or {}), 1, -1 do
+    local row = list[i]
+    local npc = row and row.npc or row
+    if ownedAvatar(npc) and not keep[npc] then table.remove(list, i) end
+  end
+end
+
+function M:purgeRestoredVisuals(ow)
+  if type(ow) ~= "table" then return 0 end
+  local keep = {}
+  for _, av in pairs(self.spawned or {}) do
+    if av.npc then keep[av.npc] = true end
+  end
+  local before = #(ow.npcs or {}) + #(ow.entities or {}) + #(ow.ghosts or {})
+  removeOrphans(ow.npcs, keep)
+  removeOrphans(ow.entities, keep)
+  removeOrphans(ow.ghosts, keep)
+  for _, ghost in ipairs(ow.ghosts or {}) do removeOrphans(ghost.peers, keep) end
+  local after = #(ow.npcs or {}) + #(ow.entities or {}) + #(ow.ghosts or {})
+  return before - after
+end
+
+-- Either side may restore its entity table last: the battle renderer or the
+-- network tick. Reassert the exact currently tracked identities after stale
+-- saved ones are removed. Insertions are idempotent.
+function M:reattachCurrentVisuals(ow)
+  if type(ow) ~= "table" then return end
+  ow.npcs, ow.entities = ow.npcs or {}, ow.entities or {}
+  for _, av in pairs(self.spawned or {}) do
+    if av.npc then
+      addIdentity(ow.npcs, av.npc)
+      addIdentity(ow.entities, av.npc)
+    end
+  end
+  M.prioritizeInteractions(ow)
 end
 
 -- where an avatar actually is right now, for the overlay's nameplate.  The
@@ -415,6 +526,47 @@ function M:advance(av, player)
   return true
 end
 
+-- Project a player on a streamed neighbor into the active map's coordinate
+-- frame. The renderer already draws that neighbor at ox/oy; spawning at the
+-- translated cell lets the avatar cross the soft seam instead of popping.
+local function projectCell(mapId, x, y, currentMapId, neighbors)
+  x, y = tonumber(x), tonumber(y)
+  if not (mapId and x and y) then return nil end
+  if mapId == currentMapId then return x, y end
+  for _, nb in ipairs(neighbors or {}) do
+    if nb and nb.map and nb.map.id == mapId then
+      local ox, oy = tonumber(nb.ox), tonumber(nb.oy)
+      if ox and oy and ox % 16 == 0 and oy % 16 == 0 then
+        return x + ox / 16, y + oy / 16
+      end
+    end
+  end
+  return nil
+end
+
+function M.projectPlayer(player, currentMapId, neighbors)
+  if not (player and currentMapId) then return nil end
+  local x, y = projectCell(player.map, player.x, player.y, currentMapId, neighbors)
+  if not (x and y) then return nil end
+  local out = {}
+  for key, value in pairs(player) do out[key] = value end
+  out.map, out.x, out.y = currentMapId, x, y
+  return out
+end
+
+-- WorldAPI can still see the overworld beneath a battle, but StateStack only
+-- updates its top. Remote NPCs must not begin steps in that frozen world or
+-- they replay the queued approach when combat ends.
+function M:canProject(game, coopState)
+  local states = game and game.stack and game.stack.states
+  for _, state in ipairs(states or {}) do
+    if state == coopState or state.kind == "wild" or state.kind == "trainer" then
+      return false
+    end
+  end
+  return true
+end
+
 -- One pass per tick.  `current` is mod.world:current() -- nil whenever
 -- there is no overworld up (title screen, a battle), in which case every
 -- avatar is dropped and rebuilt on the way back.
@@ -437,12 +589,21 @@ function M:sync(roster, current)
     self.mapId = current.mapId
   end
 
+  local ow = mod.world.overworld and mod.world:overworld() or nil
+  local neighbors = ow and ow.neighbors or {}
+  self:purgeRestoredVisuals(ow)
+
   local seen = {}
-  for _, player in ipairs(roster:onMap(current.mapId)) do
-    seen[player.id] = true
-    local av = self.spawned[player.id]
-    if av then self:advance(av, player) else self:spawn(player) end
+  for _, player in ipairs(roster:sorted()) do
+    local visible = M.projectPlayer(player, current.mapId, neighbors)
+    if visible then
+      seen[visible.id] = true
+      local av = self.spawned[visible.id]
+      if av then self:advance(av, visible) else self:spawn(visible) end
+    end
   end
+
+  self:reattachCurrentVisuals(ow)
 
   for id in pairs(self.spawned) do
     if not seen[id] then self:despawn(id) end
