@@ -48,12 +48,17 @@ end
 -- A nil is a caller that predates the field, and leaves the stored value
 -- alone: reading "no opinion" as "not fast" would have every old-shaped call
 -- stop a runner mid-stride.
-function M:move(id, map, x, y, facing, fast)
+function M:move(id, map, x, y, facing, fast, surfing, airborne, altitude,
+                flightMount)
   local player = self.players[id]
   if not player then return nil end
   player.map, player.x, player.y = map, x, y
   player.facing = facing or player.facing
   if fast ~= nil then player.fast = fast and true or false end
+  if surfing ~= nil then player.surfing = surfing and true or false end
+  if airborne ~= nil then player.airborne = airborne and true or false end
+  if altitude ~= nil then player.altitude = altitude end
+  if flightMount ~= nil or airborne == false then player.flightMount = flightMount end
   return player
 end
 

@@ -40,6 +40,7 @@ local SPRITE_LIFT = 4
 local ANCHOR_X, ANCHOR_Y = CAM_X, CAM_Y - SPRITE_LIFT
 
 local LABEL_GAP = 2
+local FLIGHT_RIDER_CLEARANCE = 12
 local SHADOW_DX, SHADOW_DY = 1, 1
 -- Rajdhani at toast size: bright enough to read on pale tiles, deep enough
 -- that white shadow still separates it from snow and indoor floors.
@@ -229,7 +230,7 @@ end
 -- projector answers in its render canvas' pixels; AA can make that canvas
 -- larger than the final window, so translate through both sizes instead of
 -- assuming one canvas pixel is one screen pixel.
-function M:voxelAnchor(game, overworld, worldX, worldY, windowW, windowH)
+function M:voxelAnchor(game, overworld, worldX, worldY, windowW, windowH, lift)
   local voxel3d, scene = self:voxelApi(game)
   if not voxel3d then return nil end
 
@@ -243,7 +244,8 @@ function M:voxelAnchor(game, overworld, worldX, worldY, windowW, windowH)
 
   -- Characters are 16 world pixels tall and stand at the centre of a cell.
   -- Two pixels of air keeps the plate from touching hats and hair.
-  local ok, x, y = pcall(voxel3d.project, worldX + CELL / 2, ground + CELL + LABEL_GAP,
+  local ok, x, y = pcall(voxel3d.project, worldX + CELL / 2,
+                         ground + CELL + LABEL_GAP + (tonumber(lift) or 0),
                          worldY + CELL / 2)
   if not (ok and type(x) == "number" and type(y) == "number") then return nil end
 
@@ -415,8 +417,8 @@ function M:drawVoxelLabel(font, text, centreX, headY, windowW, windowH, color)
 end
 
 function M:drawVoxelNameplate(font, game, overworld, player, worldX, worldY,
-                               windowW, windowH, color)
-  local x, y = self:voxelAnchor(game, overworld, worldX, worldY, windowW, windowH)
+                               windowW, windowH, color, lift)
+  local x, y = self:voxelAnchor(game, overworld, worldX, worldY, windowW, windowH, lift)
   if not x then return false end
   return self:drawVoxelLabel(font, player, x, y, windowW, windowH, color)
 end
@@ -425,7 +427,16 @@ function M:drawSelfLabel(font, game, playerPx, playerPy, scale, gameX, gameY)
   local name = self:selfName(game)
   if not (name and name ~= "") then return end
   local centreX, spriteTop = M.screenOf(playerPx, playerPy, playerPx, playerPy)
+  local overworld = mod.world and mod.world.overworld and mod.world:overworld()
+  spriteTop = spriteTop - M.selfAltitude(overworld)
   self:drawLabel(font, name, centreX, spriteTop, scale, gameX, gameY, SELF_YELLOW)
+end
+
+function M.selfAltitude(overworld)
+  local player = overworld and overworld.player
+  local altitude = tonumber(player and player.freeFlyAlt) or 0
+  if altitude <= 0 then return 0 end
+  return altitude + FLIGHT_RIDER_CLEARANCE
 end
 
 -- ------- drawing in the game's own 160x144 space
@@ -703,13 +714,15 @@ function M:draw(game, viewport)
         if ax and ay then
           drew = self:drawVoxelNameplate(labelFont, game, overworld,
                                          self:nameFor(player), ax * CELL, ay * CELL,
-                                         windowW, windowH, self:labelColor(player)) or drew
+                                         windowW, windowH, self:labelColor(player),
+                                         ctx.avatars:altitudeOf(player.id)) or drew
         end
       end
       if self:selfName(game) then
         drew = self:drawVoxelNameplate(labelFont, game, overworld,
                                        self:selfName(game), playerPx, playerPy,
-                                       windowW, windowH, SELF_YELLOW) or drew
+                                       windowW, windowH, SELF_YELLOW,
+                                       M.selfAltitude(overworld)) or drew
       end
       if drew then
         last.reached = "voxel-labels"
@@ -736,6 +749,7 @@ function M:draw(game, viewport)
     if ax and ay then
       local centreX, spriteTop = M.screenOf(ax * CELL, ay * CELL,
                                             playerPx, playerPy)
+      spriteTop = spriteTop - ctx.avatars:altitudeOf(player.id)
       self:drawLabel(labelFont, self:nameFor(player), centreX, spriteTop,
                      scale, gameX, gameY, self:labelColor(player))
     end

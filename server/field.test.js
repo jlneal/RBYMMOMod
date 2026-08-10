@@ -121,3 +121,37 @@ test('authority is deterministic and warp vacancy advances refresh epochs', () =
   assert.equal(needed.epoch, 1);
   assert.equal(needed.reset, true);
 });
+
+test('SKY claims require a compatible flight state and altitude', () => {
+  const relay = new Relay({ protocol: PROTOCOL, log: { debug() {}, info() {}, warn() {} } });
+  const ann = connect(relay, 'ANN', 'ROUTE_1');
+  const bob = connect(relay, 'BOB', 'ROUTE_1');
+  const snapshot = domainSnapshots('ROUTE_1').find(row => row.domain === 'SKY');
+  snapshot.spawns.push({ id: 'sky_low', species: 'SPEAROW', level: 5,
+    x: 216, y: 100, alt: 10, mode: 'rise', facing: 'left', vx: -1, vy: 0 });
+  relay.handle(ann.id, { type: 'mmo.field_seed', ...snapshot });
+
+  relay.handle(ann.id, { type: 'mmo.field_claim', domain: 'SKY',
+    map: 'ROUTE_1', id: 'sky_1' });
+  assert.equal(ann.wire.messages.at(-1).type, 'mmo.field_denied',
+    'a grounded player cannot contact a high flyer');
+
+  relay.handle(bob.id, { type: 'mmo.move', map: 'ROUTE_1', x: 2, y: 1,
+    airborne: true, altitude: 64, flightMount: 'PIDGEOT' });
+  assert.equal(ann.wire.messages.at(-1).flightMount, 'PIDGEOT',
+    'the relay preserves remote mount identity');
+  relay.handle(bob.id, { type: 'mmo.field_claim', domain: 'SKY',
+    map: 'ROUTE_1', id: 'sky_1' });
+  assert.equal(bob.wire.messages.find(row => row.type === 'mmo.field_granted')?.id,
+    'sky_1', 'a nearby airborne player can claim a flyer');
+
+  relay.handle(bob.id, { type: 'mmo.field_claim', domain: 'SKY',
+    map: 'ROUTE_1', id: 'sky_low' });
+  assert.equal(bob.wire.messages.at(-1).type, 'mmo.field_denied',
+    'an airborne player cannot claim outside the altitude band');
+
+  relay.handle(ann.id, { type: 'mmo.field_claim', domain: 'SKY',
+    map: 'ROUTE_1', id: 'sky_low' });
+  assert.equal(ann.wire.messages.find(row => row.type === 'mmo.field_granted')?.id,
+    'sky_low', 'a grounded player can contact a low flyer');
+});

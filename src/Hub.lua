@@ -495,6 +495,10 @@ local function presenceOf(client)
     -- reported.
     fast = client.fast == true,
     convoy = client.convoy or {},
+    surfing = client.surfing == true,
+    airborne = client.airborne == true,
+    altitude = client.altitude or 0,
+    flightMount = client.flightMount,
     profile = client.profile,
     -- Carried with presence rather than with the card: a rating moves while
     -- the player is standing there, and the card is a snapshot of their
@@ -560,6 +564,7 @@ function M:accept(peer, trusted)
     map = nil, x = nil, y = nil, facing = "down",
     fast = false,     -- nobody arrives mid-stride; the first move says otherwise
     convoy = {},
+    surfing = false, airborne = false, altitude = 0, flightMount = nil,
     sessionId = nil,
     pendingTo = nil,
     partyId = nil,
@@ -623,6 +628,10 @@ function M:admit(client)
   client.map, client.x, client.y = hello.map, hello.x, hello.y
   client.facing = hello.facing or "down"
   client.convoy = hello.convoy or {}
+  client.surfing = hello.surfing == true
+  client.airborne = hello.airborne == true
+  client.altitude = hello.altitude or 0
+  client.flightMount = client.airborne and hello.flightMount or nil
   client.hello, client.nonce = nil, nil
   client.ready = true
   -- PROTOCOL 16: playerId is the account-shaped identity. Everyone with a
@@ -2409,6 +2418,10 @@ handlers[Wire.HELLO] = function(self, client, msg)
     y = Wire.int(msg.y, 0, 4096),
     facing = Wire.facing(msg.facing) or "down",
     convoy = Wire.convoy(msg.convoy),
+    surfing = msg.surfing == true,
+    airborne = msg.airborne == true,
+    altitude = Wire.int(msg.altitude, 0, 512) or 0,
+    flightMount = Wire.spriteId(msg.flightMount),
   }
 
   if client.trusted or not self:requiresCode() then
@@ -2469,6 +2482,10 @@ handlers[Wire.MOVE] = function(self, client, msg)
   -- languages answer identically for every JSON value.
   client.fast = msg.fast == true
   client.convoy = Wire.convoy(msg.convoy)
+  client.surfing = msg.surfing == true
+  client.airborne = msg.airborne == true
+  client.altitude = Wire.int(msg.altitude, 0, 512) or 0
+  client.flightMount = client.airborne and Wire.spriteId(msg.flightMount) or nil
 
   -- A battle/menu's absent cell is temporary and never retires a field. A
   -- real warp advances refreshable populations only when the map is empty.
@@ -2950,6 +2967,15 @@ handlers[Wire.FIELD_CLAIM] = function(self, client, msg)
     if row.id == id then claimed = row else spawns[#spawns + 1] = row end
   end
   if not claimed then return deny() end
+  if domain == "GROUND" and client.airborne == true then return deny() end
+  if domain == "SKY" then
+    local alt = tonumber(claimed.alt) or 0
+    if client.airborne == true then
+      if math.abs((client.altitude or 0) - alt) > 28 then return deny() end
+    elseif alt > 12 then
+      return deny()
+    end
+  end
   if claimed.aggro == "CONTACT" and claimed.target ~= nil
      and claimed.target ~= client.id then return deny() end
   local snapshot = { domain = domain, map = map, epoch = current.epoch,

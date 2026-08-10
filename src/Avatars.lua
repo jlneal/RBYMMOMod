@@ -73,6 +73,36 @@ local RANGE_OF = {
   up = "UP", down = "DOWN", left = "LEFT", right = "RIGHT",
 }
 
+local RIDER_CLEARANCE = 12
+
+local RemoteRider = {}
+RemoteRider.__index = RemoteRider
+
+function RemoteRider.new(parent)
+  return setmetatable({ parent = parent, passable = true,
+    mmoRemoteFlightRider = true, px = parent.px, py = parent.py,
+    cellX = parent.cellX, cellY = parent.cellY }, RemoteRider)
+end
+
+function RemoteRider:sync()
+  local parent = self.parent
+  self.px, self.py = parent.px, parent.py
+  self.cellX, self.cellY = parent.cellX, parent.cellY
+end
+
+function RemoteRider:pose()
+  local parent = self.parent
+  local py = (parent.py or 0) + Config.AVATAR_DEPTH_NUDGE
+    - (tonumber(parent.mmoDisplayAltitude) or 0) - RIDER_CLEARANCE
+  return parent.mmoGroundSprite or parent.sprite, parent.px, py,
+    parent.facing, 0, false, false
+end
+
+function RemoteRider:draw(camX, camY)
+  local sprite, px, py, facing, phase, flip = self:pose()
+  if sprite and sprite.draw then sprite:draw(px, py, camX, camY, facing, phase, flip) end
+end
+
 function M.new()
   return setmetatable({
     spawned = {},   -- playerId -> { npcId, x, y, facing, npc }
@@ -178,6 +208,40 @@ function M:syncFollowers(av, player)
   for i, row in ipairs(rows) do self:advanceFollower(av.followers[i], row) end
 end
 
+local function clampAltitude(value)
+  return math.max(0, math.min(512, tonumber(value) or 0))
+end
+
+function M:applyFlightPresentation(npc, player)
+  if type(npc) ~= "table" then return false end
+  local airborne = player and player.airborne == true
+  local species = airborne and player.flightMount or nil
+  npc.mmoAirborne = airborne
+  npc.mmoTargetAltitude = airborne and clampAltitude(player.altitude) or 0
+  if npc.mmoDisplayAltitude == nil then npc.mmoDisplayAltitude = npc.mmoTargetAltitude end
+  if species and npc.mmoFlightMount ~= species then
+    npc.mmoGroundSprite = npc.mmoGroundSprite or npc.sprite
+    local ex = self:wildsExports()
+    local game = mod.world and mod.world.game
+    local okDef, def = pcall(function()
+      return ex and ex.resolveFollowerSprite and ex.resolveFollowerSprite({
+        species = species, surface = "land", role = "remote_flight_mount", game = game,
+      })
+    end)
+    local okRenderer, SpriteRenderer = pcall(require, "src.render.SpriteRenderer")
+    if okDef and def and okRenderer and SpriteRenderer and SpriteRenderer.new then
+      local okSprite, sprite = pcall(SpriteRenderer.new, def,
+        tostring(npc.id or "mmo_avatar") .. "_flight_mount")
+      if okSprite and sprite then npc.sprite = sprite end
+    end
+    npc.mmoFlightMount = species
+  elseif not airborne then
+    if npc.mmoGroundSprite then npc.sprite = npc.mmoGroundSprite end
+    npc.mmoGroundSprite, npc.mmoFlightMount = nil, nil
+  end
+  return true
+end
+
 local function addIdentity(list, value)
   if not (list and value) then return end
   for _, row in ipairs(list) do if row == value then return end end
@@ -218,6 +282,30 @@ function M.prioritizeInteractions(ow)
   return changed
 end
 
+local function removeIdentity(list, value)
+  for i = #(list or {}), 1, -1 do if list[i] == value then table.remove(list, i) end end
+end
+
+function M:clearFlightRider(av, ow)
+  if not (av and av.rider) then return end
+  removeIdentity(ow and ow.entities, av.rider)
+  av.rider = nil
+end
+
+function M:syncFlightRider(av, npc, player, ow)
+  if not (player and player.airborne == true and npc and npc.mmoGroundSprite) then
+    self:clearFlightRider(av, ow)
+    return nil
+  end
+  if not av.rider or av.rider.parent ~= npc then
+    self:clearFlightRider(av, ow)
+    av.rider = RemoteRider.new(npc)
+  end
+  av.rider:sync()
+  if ow then addIdentity(ow.entities, av.rider) end
+  return av.rider
+end
+
 -- NPC.new asserts on a sprite the data catalog does not carry, and that
 -- assert would fire inside the engine's own spawn path where this mod
 -- cannot catch it.  Checking first turns an unknown sprite into a
@@ -249,6 +337,11 @@ end
 -- and no table is allocated to do it, on a path that runs once per avatar
 -- per frame.
 local function nudged(self, ...)
+  local shown = tonumber(self.mmoDisplayAltitude) or 0
+  local target = tonumber(self.mmoTargetAltitude) or 0
+  if shown < target then shown = math.min(target, shown + 1.2)
+  elseif shown > target then shown = math.max(target, shown - 1.2) end
+  self.mmoDisplayAltitude = shown
   local py = self.py
   if py and py % 1 == 0 then
     self.py = py - Config.AVATAR_DEPTH_NUDGE
@@ -323,7 +416,12 @@ function M.decorate(npc)
   rawset(npc, "pose", function(self, ...)
     -- NPC:pose -- sheet, px, py, facing, walk phase, step flip, hop flag
     local sprite, px, py, facing, phase, flip, hop = basePose(self, ...)
+    if self.mmoAirborne then
+      local now = love and love.timer and love.timer.getTime and love.timer.getTime() or 0
+      phase = math.floor(now * 8) % 2
+    end
     if py then py = py + Config.AVATAR_DEPTH_NUDGE end
+    if py then py = py - (tonumber(self.mmoDisplayAltitude) or 0) end
     return sprite, px, py, facing, phase, flip, hop
   end)
 end
@@ -332,10 +430,13 @@ function M.undecorate(npc)
   -- a table this mod never decorated owns its own slots; leave them alone
   if type(npc) ~= "table" or not npc.mmoAvatar then return end
   local prevUpdate, prevPose = npc.mmoPrevUpdate, npc.mmoPrevPose
+  if npc.mmoGroundSprite then npc.sprite = npc.mmoGroundSprite end
   npc.mmoAvatar = nil
   npc.passable = nil
   npc.mmoPrevUpdate = nil
   npc.mmoPrevPose = nil
+  npc.mmoGroundSprite, npc.mmoFlightMount, npc.mmoAirborne = nil, nil, nil
+  npc.mmoTargetAltitude, npc.mmoDisplayAltitude = nil, nil
   -- nil in the ordinary case, which is back to the class method via the
   -- metatable
   rawset(npc, "update", prevUpdate)
@@ -377,6 +478,9 @@ function M:spawn(player)
   self.spawned[player.id].npc = npc
   M.decorate(npc)
   self:syncFollowers(self.spawned[player.id], player)
+  self:applyFlightPresentation(npc, player)
+  local ow = mod.world and mod.world.overworld and mod.world:overworld() or nil
+  self:syncFlightRider(self.spawned[player.id], npc, player, ow)
   return npcId
 end
 
@@ -385,6 +489,8 @@ function M:despawn(playerId)
   if not av then return false end
   self:clearFollowers(av)
   self.spawned[playerId] = nil
+  local ow = mod.world and mod.world.overworld and mod.world:overworld() or nil
+  self:clearFlightRider(av, ow)
   -- The table itself, held since it was decorated, because the handle is no
   -- use here: WorldAPI:npc answers nil the moment its map stops being the
   -- active one, or there is no overworld at all -- which is precisely the
@@ -532,6 +638,18 @@ function M:isWalking(playerId)
   return npc ~= nil and npc.moving == true
 end
 
+function M:altitudeOf(playerId)
+  local av = self.spawned[playerId]
+  local npc = av and av.npc
+  if not npc then
+    local handle = av and self:handle(av)
+    npc = handle and handle.npc
+  end
+  local lift = npc and (tonumber(npc.mmoDisplayAltitude) or 0) or 0
+  if av and av.rider then lift = lift + RIDER_CLEARANCE end
+  return lift
+end
+
 function M:resync(player)
   self:despawn(player.id)
   return self:spawn(player)
@@ -599,6 +717,10 @@ function M:advance(av, player)
   -- when it did not: decorate returns immediately on an already-marked NPC.
   M.decorate(npc)
   self:syncFollowers(av, player)
+
+  self:applyFlightPresentation(npc, player)
+  local ow = mod.world and mod.world.overworld and mod.world:overworld() or nil
+  self:syncFlightRider(av, npc, player, ow)
 
   -- mid-step: let NPC:update finish it. Interrupting would strand px/py
   -- between two cells.

@@ -147,7 +147,11 @@ M.MOD_ID = "rby_mmo"
 -- 26 adds session-scoped, revisioned field populations. Protocol-25 hubs do
 -- not understand their request/seed/publish/claim lifecycle, so mixed builds
 -- would silently fork the visible world instead of sharing one population.
-M.PROTOCOL = 26
+-- 11 adds airborne presence, mount identity, and altitude-aware SKY claims.
+-- Protocol-10 observers would draw a flying trainer on the ground and could
+-- claim encounters from the wrong vertical band.
+-- In this combined line that is generation 27, after shared field populations.
+M.PROTOCOL = 27
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.

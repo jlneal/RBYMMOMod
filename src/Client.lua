@@ -194,6 +194,41 @@ local sharedAmbient = SharedField.new(transport, party, ctx.roster, {
   resetExport = "resetSharedAmbientField",
   neighborExport = "sharedAmbientNeighborMaps",
 })
+local sharedSky = SharedField.new(transport, party, ctx.roster, {
+  domain = "SKY", modId = "wild_skies",
+  snapshotExport = "sharedSkyFieldSnapshot",
+  applyExport = "applySharedSkyFieldSnapshot",
+  removeExport = "removeSharedSkyFieldSpawn",
+  grantExport = "grantSharedSkyFieldContact",
+  denyExport = "denySharedSkyFieldContact",
+  clearExport = "clearSharedSkyField",
+  neighborExport = "sharedSkyNeighborMaps",
+  registerExport = "registerSharedSkyProvider",
+  unregisterExport = "unregisterSharedSkyProvider",
+  providerId = "rby_mmo", claimMethod = "requestClaim", claimWithSelf = false,
+})
+
+local function flightState()
+  if not (mod and type(mod.find) == "function") then return false, 0, nil end
+  local ok, hit = pcall(mod.find, mod, "free_fly")
+  local ex = ok and hit and hit.exports
+  if type(ex) ~= "table" or type(ex.isFlying) ~= "function" then
+    return false, 0, nil
+  end
+  local flyingOk, flying = pcall(ex.isFlying)
+  if not flyingOk or flying ~= true then return false, 0, nil end
+  local altitude = 0
+  if type(ex.altitude) == "function" then
+    local altitudeOk, value = pcall(ex.altitude)
+    if altitudeOk then altitude = Wire.int(value, 0, 512) or 0 end
+  end
+  local species
+  if type(ex.mount) == "function" then
+    local mountOk, mount = pcall(ex.mount)
+    if mountOk and type(mount) == "table" then species = Wire.spriteId(mount.species) end
+  end
+  return true, altitude, species
+end
 local npcSync = NpcField.new()
 local sharedNpc = SharedField.new(transport, party, ctx.roster, {
   domain = "NPC",
@@ -222,6 +257,7 @@ ctx.party = party
 ctx.friends = friends
 ctx.sharedGround = sharedGround
 ctx.sharedAmbient = sharedAmbient
+ctx.sharedSky = sharedSky
 ctx.sharedNpc = sharedNpc
 ctx.coop = coop
 ctx.server = server
@@ -232,7 +268,8 @@ local convoySnapshot
 local pendingTransitionVia
 local lastSent =
   { map = nil, x = nil, y = nil, facing = nil, busy = nil, fast = nil,
-    convoy = nil }
+    convoy = nil, surfing = nil, airborne = nil, altitude = nil,
+    flightMount = nil }
 
 -- Whether the last step this player committed was a fast one -- sprinted
 -- with B on foot, *or* taken on the bike.  Not "was it a run": a run and a
@@ -1416,6 +1453,9 @@ function M.sendHello(game)
   -- hub does with it. Without the seed the reconcile below would open every
   -- session by re-pushing a character the hub already has.
   local sprite = M.spriteChoice()
+  local airborne, altitude, flightMount = flightState()
+  local world = mod and mod.world
+  local ow = world and world.overworld and world:overworld() or nil
   spriteAcked, spriteClock = sprite, 0
   transport:send(Wire.HELLO, {
     proto = Config.PROTOCOL,
@@ -1430,6 +1470,8 @@ function M.sendHello(game)
     y = current and current.y,
     facing = current and current.facing,
     convoy = convoySnapshot(game),
+    surfing = ow and ow.player and ow.player.surfing == true or false,
+    airborne = airborne, altitude = altitude, flightMount = flightMount,
   })
 end
 
@@ -1446,6 +1488,7 @@ function M.disconnect()
   -- Restore every provider before the transport and identity disappear.
   sharedGround:reset()
   sharedAmbient:reset()
+  sharedSky:reset()
   sharedNpc:reset()
   party:reset()
   -- The list itself is on disk and stays there; what goes is the *open*
@@ -1472,7 +1515,8 @@ function M.disconnect()
   transport:close()
   lastSent =
     { map = nil, x = nil, y = nil, facing = nil, busy = nil, fast = nil,
-      convoy = nil }
+      convoy = nil, surfing = nil, airborne = nil, altitude = nil,
+      flightMount = nil }
   -- Cleared for the same reason lastSent is: what a hub is holding for us is
   -- a fact about one connection. Carrying it across would have the next
   -- session's reconcile weigh the choice against a hub that never heard it --
@@ -1655,7 +1699,8 @@ local function presenceCurrent()
   return M.presencePosition(current, ow and ow.player)
 end
 
-local function presenceChanged(current, busy, fast, convoySig)
+local function presenceChanged(current, busy, fast, surfing, airborne, altitude,
+                               flightMount, convoySig)
   local mapId = current and current.mapId
   local x = current and current.x
   local y = current and current.y
@@ -1671,17 +1716,32 @@ local function presenceChanged(current, busy, fast, convoySig)
     -- too, so today the checks above would carry it; the field is compared
     -- anyway so that a future writer of fastNow cannot silently strand a
     -- pace change until the next move.
-    or lastSent.fast ~= fast or lastSent.convoy ~= convoySig
+    or lastSent.fast ~= fast or lastSent.surfing ~= surfing
+    or lastSent.airborne ~= airborne or lastSent.altitude ~= altitude
+    or lastSent.flightMount ~= flightMount or lastSent.convoy ~= convoySig
+end
+
+-- Free Fly owns movement.speed while airborne, so the ordinary walking hook
+-- does not necessarily get a chance to set fastNow. Normal flight is eight
+-- frames per cell; advertising it as the sixteen-frame walking pace makes a
+-- remote avatar lose half a step every step and accumulate visible lag.
+function M.presenceFast(fast, airborne)
+  return fast == true or airborne == true
 end
 
 local function pushPresence(force, game)
   if not transport:isReady() then return end
   local current = presenceCurrent()
   local busy = sessions:isBusy()
-  local fast = M.fastNow and true or false
   local convoy = convoySnapshot(game or ctx.game)
   local convoySig = convoySignature(convoy)
-  if not force and not presenceChanged(current, busy, fast, convoySig) then return end
+  local airborne, altitude, flightMount = flightState()
+  local fast = M.presenceFast(M.fastNow, airborne)
+  local world = mod and mod.world
+  local ow = world and world.overworld and world:overworld() or nil
+  local surfing = ow and ow.player and ow.player.surfing == true or false
+  if not force and not presenceChanged(current, busy, fast, surfing, airborne,
+      altitude, flightMount, convoySig) then return end
 
   lastSent = {
     map = current and current.mapId,
@@ -1691,6 +1751,10 @@ local function pushPresence(force, game)
     busy = busy,
     fast = fast,
     convoy = convoySig,
+    surfing = surfing,
+    airborne = airborne,
+    altitude = altitude,
+    flightMount = flightMount,
   }
   transport:send(Wire.MOVE, {
     map = lastSent.map,
@@ -1700,6 +1764,10 @@ local function pushPresence(force, game)
     busy = busy,
     fast = fast,
     convoy = convoy,
+    surfing = surfing,
+    airborne = airborne,
+    altitude = altitude,
+    flightMount = flightMount,
     transition = pendingTransitionVia,
   })
   pendingTransitionVia = nil
@@ -2018,12 +2086,18 @@ handlers[Wire.MOVE] = function(_, msg)
   -- hubs are -- only a literal true is a fast step, so a client sending 0 or
   -- "" is read the same here as it is everywhere else on the wire.
   local fast = msg.fast == true
+  local surfing = msg.surfing == true
+  local airborne = msg.airborne == true
+  local altitude = Wire.int(msg.altitude, 0, 512) or 0
+  local flightMount = airborne and Wire.spriteId(msg.flightMount) or nil
   if map and x and y then
-    ctx.roster:move(id, map, x, y, facing, fast)
+    ctx.roster:move(id, map, x, y, facing, fast, surfing, airborne, altitude,
+                    flightMount)
   else
     -- no cell: the player is in a battle or a menu, so they leave the world
     -- without leaving the roster
-    ctx.roster:move(id, nil, nil, nil, facing, fast)
+    ctx.roster:move(id, nil, nil, nil, facing, fast, surfing, airborne, altitude,
+                    flightMount)
     ctx.avatars:despawn(id)
   end
 end
@@ -2090,17 +2164,23 @@ end
 handlers[Wire.FIELD_NEEDED] = function(_, msg)
   sharedGround:onNeeded(msg)
   sharedAmbient:onNeeded(msg)
+  sharedSky:onNeeded(msg)
   sharedNpc:onNeeded(msg)
 end
 
 handlers[Wire.FIELD_SNAPSHOT] = function(_, msg)
   sharedGround:onSnapshot(msg)
   sharedAmbient:onSnapshot(msg)
+  sharedSky:onSnapshot(msg)
   sharedNpc:onSnapshot(msg)
 end
 
-handlers[Wire.FIELD_GRANTED] = function(_, msg) sharedGround:onGranted(msg) end
-handlers[Wire.FIELD_DENIED] = function(_, msg) sharedGround:onDenied(msg) end
+handlers[Wire.FIELD_GRANTED] = function(_, msg)
+  sharedGround:onGranted(msg); sharedSky:onGranted(msg)
+end
+handlers[Wire.FIELD_DENIED] = function(_, msg)
+  sharedGround:onDenied(msg); sharedSky:onDenied(msg)
+end
 handlers[Wire.COOP_OFFER_END] = function(_, msg) coop:onOfferEnd(msg) end
 handlers[Wire.COOP_JOINED] = function(game, msg) coop:onJoined(game, msg) end
 handlers[Wire.COOP_ASK] = function(game, msg) coop:onAsk(game, msg) end
@@ -2321,6 +2401,7 @@ local function tick(game, dt)
   friends:update(game, dt)
   sharedGround:update(dt)
   sharedAmbient:update(dt)
+  sharedSky:update(dt)
   sharedNpc:update(dt)
 
   presenceClock = presenceClock + dt
@@ -2724,6 +2805,7 @@ function M.install()
   mod.exports.party = function() return party:list() end
   mod.exports.sharedGroundField = function() return sharedGround:state() end
   mod.exports.sharedAmbientField = function() return sharedAmbient:state() end
+  mod.exports.sharedSkyField = function() return sharedSky:state() end
   mod.exports.sharedNpcField = function() return sharedNpc:state() end
   -- Co-op, as the end-to-end driver has to be able to read it: whether this
   -- client is standing at a fight waiting, what its partner is offering, and

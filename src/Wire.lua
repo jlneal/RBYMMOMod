@@ -1063,6 +1063,10 @@ function M.presence(raw)
     -- against true is the one test both languages answer identically.
     fast = raw.fast == true,
     convoy = M.convoy(raw.convoy),
+    surfing = raw.surfing == true,
+    airborne = raw.airborne == true,
+    altitude = M.int(raw.altitude, 0, 512) or 0,
+    flightMount = M.spriteId(raw.flightMount),
     profile = M.profile(raw.profile),
     -- Ranked points ride with presence rather than with the trainer card,
     -- because they are not a snapshot of who somebody was when they joined:

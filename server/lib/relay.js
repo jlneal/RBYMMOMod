@@ -132,7 +132,9 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // A protocol-24 observer would silently omit it, so mixed builds are refused.
 // 26 adds session-scoped, revisioned field populations. A protocol-25 hub
 // silently ignores that lifecycle and would fork the visible world.
-const PROTOCOL = 26;
+// 11 adds airborne presence, mount identity, and altitude-aware SKY claims.
+// In this combined line that is generation 27, after shared field populations.
+const PROTOCOL = 27;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right
@@ -273,6 +275,10 @@ function presenceOf(client) {
     // value it last reported.
     fast: Boolean(client.fast),
     convoy: client.convoy || [],
+    surfing: client.surfing === true,
+    airborne: client.airborne === true,
+    altitude: client.altitude || 0,
+    flightMount: client.flightMount || undefined,
     // The trainer card the player shows others. Carried here because
     // src/Hub.lua does (Hub.lua:74): a player on a dedicated hub would
     // otherwise silently have no card, and the two hosting paths have to
@@ -344,6 +350,10 @@ handlers['mmo.hello'] = (relay, client, msg) => {
     y: cleanInt(msg.y, 0, 4096),
     facing: FACINGS.has(msg.facing) ? msg.facing : 'down',
     convoy: cleanConvoy(msg.convoy),
+    surfing: msg.surfing === true,
+    airborne: msg.airborne === true,
+    altitude: cleanInt(msg.altitude == null ? 0 : msg.altitude, 0, 512) || 0,
+    flightMount: cleanSpriteId(msg.flightMount),
   };
 
   if (!relay.auth) return relay.admit(client);
@@ -424,6 +434,10 @@ handlers['mmo.move'] = (relay, client, msg) => {
   // answer identically for every JSON value.
   client.fast = msg.fast === true;
   client.convoy = cleanConvoy(msg.convoy);
+  client.surfing = msg.surfing === true;
+  client.airborne = msg.airborne === true;
+  client.altitude = cleanInt(msg.altitude == null ? 0 : msg.altitude, 0, 512) || 0;
+  client.flightMount = client.airborne ? cleanSpriteId(msg.flightMount) : null;
 
   if (msg.transition === 'warp' && wasOn && map && wasOn !== map) {
     const occupied = [...relay.clients.values()]
@@ -556,6 +570,12 @@ handlers['mmo.field_claim'] = (relay, client, msg) => {
   if (!current) return deny();
   const claimed = current.spawns.find(row => row.id === id);
   if (!claimed) return deny();
+  if (domain === 'GROUND' && client.airborne === true) return deny();
+  if (domain === 'SKY') {
+    if (client.airborne === true) {
+      if (Math.abs((client.altitude || 0) - claimed.alt) > 28) return deny();
+    } else if (claimed.alt > 12) return deny();
+  }
   if (claimed.aggro === 'CONTACT' && claimed.target
       && claimed.target !== client.id) return deny();
   const snapshot = { domain, map, epoch: current.epoch,
@@ -1932,6 +1952,10 @@ class Relay {
       // stays false
       fast: false,
       convoy: [],
+      surfing: false,
+      airborne: false,
+      altitude: 0,
+      flightMount: null,
       sessionId: null,
       pendingTo: null,
       partyId: null,
@@ -2001,6 +2025,10 @@ class Relay {
     client.y = hello.y === undefined ? null : hello.y;
     client.facing = hello.facing || 'down';
     client.convoy = hello.convoy || [];
+    client.surfing = hello.surfing === true;
+    client.airborne = hello.airborne === true;
+    client.altitude = hello.altitude || 0;
+    client.flightMount = client.airborne ? hello.flightMount : null;
     client.hello = null;
     client.nonce = null;
 

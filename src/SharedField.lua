@@ -49,6 +49,10 @@ function M.new(transport, identity, roster, opts)
     resetExport = opts.resetExport,
     neighborExport = opts.neighborExport or "sharedNeighborMaps",
     registerExport = opts.registerExport,
+    unregisterExport = opts.unregisterExport,
+    providerId = opts.providerId,
+    claimMethod = opts.claimMethod or "claim",
+    claimWithSelf = opts.claimWithSelf ~= false,
     exports = opts.exports,
     acceptContact = opts.acceptContact,
     publishInterval = opts.publishInterval or PUBLISH_INTERVAL,
@@ -89,12 +93,16 @@ function M:targets(map)
     out[#out + 1] = { id = selfId, localPlayer = true,
       x = ow.player.cellX, y = ow.player.cellY,
       facing = ow.player.facing or current.facing,
-      surfing = ow.player.surfing == true }
+      surfing = ow.player.surfing == true,
+      airborne = ow.player.freeFlying == true,
+      altitude = ow.player.freeFlyAlt or 0 }
   end
   for _, player in ipairs((self.roster and self.roster:sorted()) or {}) do
     if player.map == map and player.x ~= nil and player.y ~= nil and not player.busy then
       out[#out + 1] = { id = player.id, localPlayer = false,
-        x = player.x, y = player.y, facing = player.facing }
+        x = player.x, y = player.y, facing = player.facing,
+        surfing = player.surfing == true, airborne = player.airborne == true,
+        altitude = player.altitude or 0 }
     end
   end
   table.sort(out, function(a, b) return a.id < b.id end)
@@ -108,14 +116,23 @@ function M:register()
   if self.registered == ex then return true end
   local adapter = self
   local provider = {
-    claim = function(_, map, id) return adapter:claim(map, id) end,
     targets = function(_, map) return adapter:targets(map) end,
     acceptContact = function(_, map, id, target)
       if type(adapter.acceptContact) ~= "function" then return false end
       return adapter.acceptContact(map, id, target) == true
     end,
   }
-  local ok, accepted = pcall(ex[self.registerExport], provider)
+  if self.claimWithSelf then
+    provider[self.claimMethod] = function(_, map, id) return adapter:claim(map, id) end
+  else
+    provider[self.claimMethod] = function(map, id) return adapter:claim(map, id) end
+  end
+  local ok, accepted
+  if self.providerId then
+    ok, accepted = pcall(ex[self.registerExport], self.providerId, provider)
+  else
+    ok, accepted = pcall(ex[self.registerExport], provider)
+  end
   if not (ok and accepted ~= false) then return false end
   self.registered = ex
   return true
@@ -123,7 +140,12 @@ end
 
 function M:reset()
   local ex = self.registered or self:providerExports()
-  if ex and type(ex[self.clearExport]) == "function" then pcall(ex[self.clearExport]) end
+  if ex and self.unregisterExport and type(ex[self.unregisterExport]) == "function"
+     and self.providerId then
+    pcall(ex[self.unregisterExport], self.providerId)
+  elseif ex and type(ex[self.clearExport]) == "function" then
+    pcall(ex[self.clearExport])
+  end
   self.registered = nil
   self.map, self.clock, self.total = nil, 0, 0
   self.requested, self.snapshots, self.authorities = {}, {}, {}
