@@ -66,6 +66,105 @@ function cleanConvoy(value) {
   return out;
 }
 
+const FIELD_BEHAVIORS = new Set([
+  'IDLE_LOOK', 'GRASS_WANDER', 'AGGRESSIVE', 'HIDDEN_GRASS', 'HIDDEN_CAVE',
+  'WATER_IDLE', 'WATER_WANDER', 'WATER_AGGRESSIVE',
+  'SAFARI_IDLE', 'SAFARI_WANDER', 'SAFARI_FLEE',
+]);
+const FIELD_SURFACES = new Set([
+  'GRASS', 'CAVE', 'WATER', 'INTERIOR', 'OTHER_ENCOUNTER',
+]);
+const FIELD_KINDS = new Set(['grass', 'water']);
+const FIELD_AGGRO = new Set(['ALERT', 'CHASE', 'CONTACT']);
+const FIELD_DOMAINS = new Set(['GROUND', 'SKY', 'AMBIENT', 'NPC']);
+const AMBIENT_BEHAVIORS = new Set(['IDLE', 'WANDER']);
+const SKY_MODES = new Set(['roam', 'ground', 'rise', 'toLand', 'leave', 'summon']);
+
+function cleanFieldSnapshot(value) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)
+      || !Array.isArray(value.spawns) || value.spawns.length > 24) return null;
+  const map = cleanMapId(value.map);
+  const domain = value.domain == null ? 'GROUND'
+    : (FIELD_DOMAINS.has(value.domain) ? value.domain : null);
+  const revision = cleanInt(value.revision, 0, 2147483647);
+  const epoch = cleanInt(value.epoch == null ? 0 : value.epoch, 0, 2147483647);
+  if (!map || !domain || revision === null || epoch === null) return null;
+
+  const spawns = [];
+  const seen = new Set();
+  for (const row of value.spawns) {
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) return null;
+    const id = cleanId(row.id);
+    const x = cleanInt(row.x, 0, domain === 'SKY' ? 65535 : 4096);
+    const y = cleanInt(row.y, 0, domain === 'SKY' ? 65535 : 4096);
+    if (!id || seen.has(id) || x === null || y === null) return null;
+    seen.add(id);
+
+    if (domain === 'NPC') {
+      const moving = row.moving === true;
+      const marching = row.marching === true;
+      const targetX = row.targetX == null ? null : cleanInt(row.targetX, 0, 4096);
+      const targetY = row.targetY == null ? null : cleanInt(row.targetY, 0, 4096);
+      const progress = cleanInt(row.progress == null ? 0 : row.progress, 0, 32);
+      if (progress === null || (moving && !marching
+          && (targetX === null || targetY === null))) return null;
+      const clean = { id, map, x, y,
+        facing: FACINGS.has(row.facing) ? row.facing : 'down', moving,
+        progress, marching, stepFlip: row.stepFlip === true };
+      if (targetX !== null && targetY !== null) {
+        clean.targetX = targetX; clean.targetY = targetY;
+      }
+      spawns.push(clean);
+      continue;
+    }
+
+    if (domain === 'SKY') {
+      const species = cleanSpriteId(row.species);
+      const level = cleanInt(row.level, 1, 100);
+      const alt = cleanInt(row.alt, 0, 512);
+      const vx = row.vx == null ? null : cleanInt(row.vx, -256, 256);
+      const vy = row.vy == null ? null : cleanInt(row.vy, -256, 256);
+      if (!species || level === null || alt === null || !SKY_MODES.has(row.mode)
+          || ((row.vx != null || row.vy != null) && (vx === null || vy === null))) {
+        return null;
+      }
+      const clean = { id, map, species, level, x, y, alt,
+        facing: FACINGS.has(row.facing) ? row.facing : 'right',
+        mode: row.mode, bold: row.bold === true };
+      if (vx !== null) { clean.vx = vx; clean.vy = vy; }
+      spawns.push(clean);
+      continue;
+    }
+
+    if (domain === 'AMBIENT') {
+      const species = cleanSpriteId(row.species);
+      if (!species || !AMBIENT_BEHAVIORS.has(row.behavior)) return null;
+      spawns.push({ id, map, species, x, y,
+        facing: FACINGS.has(row.facing) ? row.facing : 'down',
+        behavior: row.behavior, surface: 'AMBIENT', kind: 'ambient' });
+      continue;
+    }
+
+    const species = cleanSpriteId(row.species);
+    const level = cleanInt(row.level, 1, 100);
+    const target = row.target == null ? null : cleanId(row.target);
+    const aggro = row.aggro == null ? null
+      : (FIELD_AGGRO.has(row.aggro) ? row.aggro : null);
+    const aggressive = row.behavior === 'AGGRESSIVE'
+      || row.behavior === 'WATER_AGGRESSIVE';
+    if (!species || level === null || !FIELD_BEHAVIORS.has(row.behavior)
+        || !FIELD_SURFACES.has(row.surface) || !FIELD_KINDS.has(row.kind)) return null;
+    if ((row.target != null || row.aggro != null)
+        && (!target || !aggro || !aggressive)) return null;
+    const clean = { id, map, species, level, x, y,
+      facing: FACINGS.has(row.facing) ? row.facing : 'down',
+      behavior: row.behavior, surface: row.surface, kind: row.kind };
+    if (target) { clean.target = target; clean.aggro = aggro; }
+    spawns.push(clean);
+  }
+  return { domain, map, epoch, revision, spawns };
+}
+
 // An HMAC response off the wire. Lowercase only, because that is what both
 // Node's crypto and the mod's pure-Lua digest produce, and accepting the
 // other case would mean two spellings of the same credential.
@@ -1343,6 +1442,7 @@ module.exports = {
   cleanSpriteId,
   cleanMapId,
   cleanConvoy,
+  cleanFieldSnapshot,
   cleanInt,
   cleanHex,
   cleanCode,

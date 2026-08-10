@@ -291,6 +291,12 @@ function M.new(opts)
     -- id -> { clientId, ... }: who mmo.coop_relay fans out to. Separate from
     -- coopAsks because it starts where an ask *ends*, and outlives it.
     coopBattles = {},
+    -- domain + map -> canonical, session-wide, sanitized field snapshot.
+    wildFields = {},
+    -- field key -> last authority identity announced with that snapshot.
+    fieldAuthorities = {},
+    -- field key -> refresh generation after the last player leaves by warp.
+    fieldEpochs = {},
     -- Paperwork for a party-vs-party co-op battle: id -> { pairs, reports,
     -- startedAt }. Kept apart from `matches` because a co-op battle is four
     -- reports rather than two, and folding them into one table would mean
@@ -695,6 +701,7 @@ function M:drop(client)
   end
   if client.ready then
     self:broadcast(Wire.PART, { id = client.id }, client.id)
+    self:refreshFieldAuthorities(client.map)
   end
   return true
 end
@@ -743,6 +750,9 @@ function M:endSession(client, reason)
   if self.clients[client.id] then
     self:broadcast(Wire.MOVE, presenceOf(client), client.id)
   end
+  self:refreshFieldAuthorities(client.map,
+    session and self.clients[session.a] and self.clients[session.a].map,
+    session and self.clients[session.b] and self.clients[session.b].map)
 end
 
 function M:startSession(a, b, kind)
@@ -798,6 +808,7 @@ function M:startSession(a, b, kind)
       sides = { a = { a.id }, b = { b.id } },
     })
   end
+  self:refreshFieldAuthorities(a.map, b.map)
 end
 
 -- ------- parties
@@ -2436,6 +2447,7 @@ end
 
 handlers[Wire.MOVE] = function(self, client, msg)
   if not client.ready then return end
+  local oldMap = client.map
   local map = Wire.mapId(msg.map)
   local x, y = Wire.int(msg.x, 0, 4096), Wire.int(msg.y, 0, 4096)
   if map and x and y then
@@ -2457,7 +2469,28 @@ handlers[Wire.MOVE] = function(self, client, msg)
   -- languages answer identically for every JSON value.
   client.fast = msg.fast == true
   client.convoy = Wire.convoy(msg.convoy)
+
+  -- A battle/menu's absent cell is temporary and never retires a field. A
+  -- real warp advances refreshable populations only when the map is empty.
+  -- NPC poses are continuity state, while SKY has its own provider lifecycle.
+  if msg.transition == "warp" and oldMap and map and oldMap ~= map then
+    local occupied = false
+    for _, member in pairs(self.clients) do
+      if member.ready and member.map == oldMap then occupied = true; break end
+    end
+    if not occupied then
+      for _, domain in ipairs({ "GROUND", "AMBIENT" }) do
+        local key = domain .. ":" .. oldMap
+        local current = self.wildFields[key]
+        self.fieldEpochs[key] = math.max(self.fieldEpochs[key] or 0,
+          current and current.epoch or 0) + 1
+        self.wildFields[key] = nil
+        self.fieldAuthorities[key] = nil
+      end
+    end
+  end
   self:broadcast(Wire.MOVE, presenceOf(client), client.id)
+  if oldMap ~= client.map then self:refreshFieldAuthorities(oldMap, client.map) end
 end
 
 -- Smallest gap between two character changes from one player.  The chat
@@ -2780,6 +2813,170 @@ handlers[Wire.FRIEND_REMOVE] = function(self, client, msg)
 
   deliverFriend(self, theirs, "remove", Wire.FRIEND_REMOVE,
     { name = client.name }, { kind = "remove", name = client.name })
+end
+
+-- ------- shared field populations
+
+local FIELD_DOMAINS = { GROUND = true, SKY = true, AMBIENT = true, NPC = true }
+local CLAIMABLE_DOMAINS = { GROUND = true, SKY = true }
+
+local function fieldDomain(value)
+  if value == nil then return "GROUND" end
+  return FIELD_DOMAINS[value] and value or nil
+end
+
+local function fieldKey(domain, map) return domain .. ":" .. map end
+
+local function fieldAuthority(self, map)
+  local members = {}
+  for _, member in pairs(self.clients) do
+    if member.ready then members[#members + 1] = member end
+  end
+  table.sort(members, function(a, b) return tostring(a.id) < tostring(b.id) end)
+  for _, member in ipairs(members) do
+    if member.map == map and member.sessionId == nil then return member end
+  end
+  -- An idle off-map client may keep a visible neighboring map warm.
+  for _, member in ipairs(members) do
+    if member.sessionId == nil then return member end
+  end
+  return nil
+end
+
+local function fieldSendAll(self, snapshot)
+  local authority = fieldAuthority(self, snapshot.map)
+  self.fieldAuthorities[fieldKey(snapshot.domain, snapshot.map)] =
+    authority and authority.id or false
+  local payload = {
+    domain = snapshot.domain, map = snapshot.map, epoch = snapshot.epoch,
+    revision = snapshot.revision, spawns = snapshot.spawns,
+    authority = authority and authority.id or nil,
+  }
+  for _, member in pairs(self.clients) do
+    if member.ready then send(member, Wire.FIELD_SNAPSHOT, payload) end
+  end
+end
+
+-- Authority follows presence and is not part of the revisioned snapshot.
+function M:refreshFieldAuthorities(...)
+  local wanted = {}
+  for i = 1, select("#", ...) do
+    local map = select(i, ...)
+    if map then wanted[map] = true end
+  end
+  for _, snapshot in pairs(self.wildFields) do
+    if wanted[snapshot.map] then
+      local key = fieldKey(snapshot.domain, snapshot.map)
+      local authority = fieldAuthority(self, snapshot.map)
+      local nextId = authority and authority.id or false
+      if self.fieldAuthorities[key] ~= nextId then fieldSendAll(self, snapshot) end
+    end
+  end
+end
+
+local function fieldTargetsValid(self, snapshot)
+  local members = {}
+  for _, member in pairs(self.clients) do
+    if member.ready then members[member.id] = member end
+  end
+  for _, row in ipairs(snapshot.spawns) do
+    local target = row.target and members[row.target] or nil
+    if row.target and (not target or target.map ~= snapshot.map
+       or target.sessionId ~= nil) then return false end
+  end
+  return true
+end
+
+handlers[Wire.FIELD_REQUEST] = function(self, client, msg)
+  if not client.ready then return end
+  local map, domain = Wire.mapId(msg.map), fieldDomain(msg.domain)
+  if not map or not domain then return end
+  local key = fieldKey(domain, map)
+  local snapshot = self.wildFields[key]
+  if snapshot then return fieldSendAll(self, snapshot) end
+  local authority = fieldAuthority(self, map)
+  if authority then
+    local epoch = self.fieldEpochs[key] or 0
+    send(authority, Wire.FIELD_NEEDED, {
+      domain = domain, map = map, epoch = epoch,
+      reset = (domain == "GROUND" or domain == "AMBIENT") and epoch > 0,
+    })
+  end
+end
+
+handlers[Wire.FIELD_SEED] = function(self, client, msg)
+  if not client.ready then return end
+  local incoming = Wire.fieldSnapshot(msg)
+  if not incoming or not fieldTargetsValid(self, incoming) then return end
+  local authority = fieldAuthority(self, incoming.map)
+  if not authority or authority.id ~= client.id then return end
+  local key = fieldKey(incoming.domain, incoming.map)
+  if self.wildFields[key] then return fieldSendAll(self, self.wildFields[key]) end
+  if incoming.epoch ~= (self.fieldEpochs[key] or 0) then return end
+  incoming.revision = 1
+  self.wildFields[key] = incoming
+  fieldSendAll(self, incoming)
+end
+
+handlers[Wire.FIELD_PUBLISH] = function(self, client, msg)
+  if not client.ready then return end
+  local incoming = Wire.fieldSnapshot(msg)
+  if not incoming or not fieldTargetsValid(self, incoming) then return end
+  local authority = fieldAuthority(self, incoming.map)
+  if not authority or authority.id ~= client.id then return end
+  local key = fieldKey(incoming.domain, incoming.map)
+  local current = self.wildFields[key]
+  if not current or incoming.epoch ~= current.epoch
+     or incoming.revision ~= current.revision then return end
+  incoming.revision = current.revision + 1
+  self.wildFields[key] = incoming
+  fieldSendAll(self, incoming)
+end
+
+handlers[Wire.FIELD_CLAIM] = function(self, client, msg)
+  if not client.ready then return end
+  local map, id = Wire.mapId(msg.map), Wire.id(msg.id)
+  local domain = fieldDomain(msg.domain)
+  if not (map and id and domain and CLAIMABLE_DOMAINS[domain]) then return end
+  local function deny()
+    send(client, Wire.FIELD_DENIED, { domain = domain, map = map, id = id })
+  end
+  if client.map ~= map or client.sessionId ~= nil then return deny() end
+  local key = fieldKey(domain, map)
+  local current = self.wildFields[key]
+  if not current then return deny() end
+  local spawns, claimed = {}, nil
+  for _, row in ipairs(current.spawns) do
+    if row.id == id then claimed = row else spawns[#spawns + 1] = row end
+  end
+  if not claimed then return deny() end
+  if claimed.aggro == "CONTACT" and claimed.target ~= nil
+     and claimed.target ~= client.id then return deny() end
+  local snapshot = { domain = domain, map = map, epoch = current.epoch,
+    revision = current.revision + 1, spawns = spawns }
+  self.wildFields[key] = snapshot
+  -- Ordered delivery lets the claimant retain the exact row while opening.
+  send(client, Wire.FIELD_GRANTED, { domain = domain, map = map, id = id })
+  fieldSendAll(self, snapshot)
+end
+
+handlers[Wire.FIELD_CONSUME] = function(self, client, msg)
+  if not client.ready then return end
+  local map, id = Wire.mapId(msg.map), Wire.id(msg.id)
+  local domain = fieldDomain(msg.domain)
+  if not (map and id and domain and CLAIMABLE_DOMAINS[domain]) then return end
+  local key = fieldKey(domain, map)
+  local current = self.wildFields[key]
+  if not current then return end
+  local spawns, found = {}, false
+  for _, row in ipairs(current.spawns) do
+    if row.id == id then found = true else spawns[#spawns + 1] = row end
+  end
+  if not found then return end
+  local snapshot = { domain = domain, map = map, epoch = current.epoch,
+    revision = current.revision + 1, spawns = spawns }
+  self.wildFields[key] = snapshot
+  fieldSendAll(self, snapshot)
 end
 
 -- ------- co-op
@@ -3911,6 +4108,7 @@ function M:shutdown(message)
   -- does not survive the process that was refereeing it.
   self.coopAsks, self.coopBattles, self.coopMatches = {}, {}, {}
   self.battles = {}
+  self.wildFields, self.fieldAuthorities, self.fieldEpochs = {}, {}, {}
   -- The board survives: it is the hub's record, not the connection's, and a
   -- host who stops and starts a game has not un-won anybody's battles. The
   -- half-reported matches do not -- their sessions are gone.

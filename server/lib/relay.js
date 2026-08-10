@@ -44,6 +44,7 @@ const {
   cleanBattleKey, cleanCoopReason, cleanCoopOfferMode, cleanLabel, cleanPartyEvent, PARTY_MAX,
   cleanBattleRuleset, cleanBattleParty, cleanBattleChoice, cleanBattleReconnect,
   cleanBattleMon, BATTLE_MOVE_MAX, BATTLE_MON_MAX,
+  cleanFieldSnapshot,
 } = require('./sanitize');
 const { Turn } = require('./battle');
 const Effects = require('./battle/Effects');
@@ -129,7 +130,9 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // 24 adds acknowledged one-at-a-time frames for larger prefix packages.
 // 25 adds the bounded display-only follower convoy carried with presence.
 // A protocol-24 observer would silently omit it, so mixed builds are refused.
-const PROTOCOL = 25;
+// 26 adds session-scoped, revisioned field populations. A protocol-25 hub
+// silently ignores that lifecycle and would fork the visible world.
+const PROTOCOL = 26;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right
@@ -421,11 +424,163 @@ handlers['mmo.move'] = (relay, client, msg) => {
   // answer identically for every JSON value.
   client.fast = msg.fast === true;
   client.convoy = cleanConvoy(msg.convoy);
+
+  if (msg.transition === 'warp' && wasOn && map && wasOn !== map) {
+    const occupied = [...relay.clients.values()]
+      .some(member => member.ready && member.map === wasOn);
+    if (!occupied) {
+      for (const domain of ['GROUND', 'AMBIENT']) {
+        const key = fieldKey(domain, wasOn);
+        const current = relay.wildFields.get(key);
+        relay.fieldEpochs.set(key, Math.max(relay.fieldEpochs.get(key) || 0,
+          current ? current.epoch : 0) + 1);
+        relay.wildFields.delete(key);
+        relay.fieldAuthorities.delete(key);
+      }
+    }
+  }
   relay.broadcast('mmo.move', presenceOf(client), client.id);
+  if (client.map !== wasOn) fieldRefreshAuthorities(relay, wasOn, client.map);
   // Crossing into another map -- or out of the world entirely, into a battle
   // or a menu, which is what a null cell means -- is the only part of a step
   // an operator's list of places can see.
   if (client.map !== wasOn) relay.noteRosterChange();
+};
+
+// ------- shared field populations
+
+const FIELD_DOMAINS = new Set(['GROUND', 'SKY', 'AMBIENT', 'NPC']);
+const CLAIMABLE_DOMAINS = new Set(['GROUND', 'SKY']);
+
+function fieldDomain(value) {
+  if (value == null) return 'GROUND';
+  return FIELD_DOMAINS.has(value) ? value : null;
+}
+
+function fieldKey(domain, map) { return `${domain}:${map}`; }
+
+function fieldAuthority(relay, map) {
+  const members = [...relay.clients.values()].filter(member => member.ready)
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return members.find(member => member.map === map && !member.sessionId)
+    || members.find(member => !member.sessionId) || null;
+}
+
+function fieldSendAll(relay, snapshot) {
+  const authority = fieldAuthority(relay, snapshot.map);
+  relay.fieldAuthorities.set(fieldKey(snapshot.domain, snapshot.map),
+    authority ? authority.id : null);
+  const payload = Object.assign({}, snapshot,
+    { authority: authority ? authority.id : undefined });
+  for (const member of relay.clients.values()) {
+    if (member.ready) relay.send(member, 'mmo.field_snapshot', payload);
+  }
+}
+
+function fieldRefreshAuthorities(relay, ...maps) {
+  const wanted = new Set(maps.filter(Boolean));
+  for (const snapshot of relay.wildFields.values()) {
+    if (!wanted.has(snapshot.map)) continue;
+    const key = fieldKey(snapshot.domain, snapshot.map);
+    const authority = fieldAuthority(relay, snapshot.map);
+    const nextId = authority ? authority.id : null;
+    if (relay.fieldAuthorities.get(key) !== nextId) fieldSendAll(relay, snapshot);
+  }
+}
+
+function fieldTargetsValid(relay, snapshot) {
+  const members = new Map([...relay.clients.values()]
+    .filter(member => member.ready).map(member => [member.id, member]));
+  return snapshot.spawns.every(row => {
+    if (!row.target) return true;
+    const target = members.get(row.target);
+    return Boolean(target && target.map === snapshot.map && !target.sessionId);
+  });
+}
+
+handlers['mmo.field_request'] = (relay, client, msg) => {
+  if (!client.ready) return;
+  const map = cleanMapId(msg.map);
+  const domain = fieldDomain(msg.domain);
+  if (!map || !domain) return;
+  const key = fieldKey(domain, map);
+  const snapshot = relay.wildFields.get(key);
+  if (snapshot) return fieldSendAll(relay, snapshot);
+  const authority = fieldAuthority(relay, map);
+  if (authority) {
+    const epoch = relay.fieldEpochs.get(key) || 0;
+    relay.send(authority, 'mmo.field_needed', { domain, map, epoch,
+      reset: (domain === 'GROUND' || domain === 'AMBIENT') && epoch > 0 });
+  }
+};
+
+handlers['mmo.field_seed'] = (relay, client, msg) => {
+  if (!client.ready) return;
+  const incoming = cleanFieldSnapshot(msg);
+  if (!incoming || !fieldTargetsValid(relay, incoming)) return;
+  const authority = fieldAuthority(relay, incoming.map);
+  if (!authority || authority.id !== client.id) return;
+  const key = fieldKey(incoming.domain, incoming.map);
+  if (relay.wildFields.has(key)) return fieldSendAll(relay, relay.wildFields.get(key));
+  if (incoming.epoch !== (relay.fieldEpochs.get(key) || 0)) return;
+  incoming.revision = 1;
+  relay.wildFields.set(key, incoming);
+  fieldSendAll(relay, incoming);
+};
+
+handlers['mmo.field_publish'] = (relay, client, msg) => {
+  if (!client.ready) return;
+  const incoming = cleanFieldSnapshot(msg);
+  if (!incoming || !fieldTargetsValid(relay, incoming)) return;
+  const authority = fieldAuthority(relay, incoming.map);
+  if (!authority || authority.id !== client.id) return;
+  const key = fieldKey(incoming.domain, incoming.map);
+  const current = relay.wildFields.get(key);
+  if (!current || incoming.epoch !== current.epoch
+      || incoming.revision !== current.revision) return;
+  incoming.revision = current.revision + 1;
+  relay.wildFields.set(key, incoming);
+  fieldSendAll(relay, incoming);
+};
+
+handlers['mmo.field_claim'] = (relay, client, msg) => {
+  if (!client.ready) return;
+  const map = cleanMapId(msg.map);
+  const id = cleanId(msg.id);
+  const domain = fieldDomain(msg.domain);
+  if (!map || !id || !domain || !CLAIMABLE_DOMAINS.has(domain)) return;
+  const deny = () => relay.send(client, 'mmo.field_denied', { domain, map, id });
+  if (client.map !== map || client.sessionId) return deny();
+  const key = fieldKey(domain, map);
+  const current = relay.wildFields.get(key);
+  if (!current) return deny();
+  const claimed = current.spawns.find(row => row.id === id);
+  if (!claimed) return deny();
+  if (claimed.aggro === 'CONTACT' && claimed.target
+      && claimed.target !== client.id) return deny();
+  const snapshot = { domain, map, epoch: current.epoch,
+    revision: current.revision + 1,
+    spawns: current.spawns.filter(row => row.id !== id) };
+  relay.wildFields.set(key, snapshot);
+  relay.send(client, 'mmo.field_granted', { domain, map, id });
+  fieldSendAll(relay, snapshot);
+};
+
+handlers['mmo.field_consume'] = (relay, client, msg) => {
+  if (!client.ready) return;
+  const map = cleanMapId(msg.map);
+  const id = cleanId(msg.id);
+  const domain = fieldDomain(msg.domain);
+  if (!map || !id || !domain || !CLAIMABLE_DOMAINS.has(domain)) return;
+  const key = fieldKey(domain, map);
+  const current = relay.wildFields.get(key);
+  if (!current) return;
+  const spawns = current.spawns.filter(row => row.id !== id);
+  if (spawns.length === current.spawns.length) return;
+  const snapshot = { domain, map, epoch: current.epoch,
+    revision: current.revision + 1, spawns };
+  relay.wildFields.set(key, snapshot);
+  fieldSendAll(relay, snapshot);
 };
 
 /*
@@ -1390,6 +1545,9 @@ class Relay {
     // id -> [clientId]: who mmo.coop_relay fans out to. Separate from coopAsks
     // because it starts where an ask *ends*, and outlives it.
     this.coopBattles = new Map();
+    this.wildFields = new Map();
+    this.fieldAuthorities = new Map();
+    this.fieldEpochs = new Map();
     // Paperwork for a party-vs-party co-op battle: four reports rather than
     // two, so it is kept apart from `matches` instead of folded in.
     this.coopMatches = new Map();
@@ -1928,6 +2086,7 @@ class Relay {
     if (client.ready) {
       this.broadcast('mmo.part', { id: playerId }, playerId);
       this.log.info(`- ${safe(client.name)} (${playerId}) -- ${this.players} online`);
+      fieldRefreshAuthorities(this, client.map);
       this.noteRosterChange();
     }
     return true;
@@ -1947,6 +2106,9 @@ class Relay {
     this.parties.clear();
     // A fight in progress does not survive the process that was refereeing it.
     this.battles.clear();
+    this.wildFields.clear();
+    this.fieldAuthorities.clear();
+    this.fieldEpochs.clear();
     this.players = 0;
     // The board survives a shutdown -- it is the hub's record, not the
     // connection's, and it is what lib/server.js writes to disk. The
@@ -2481,6 +2643,9 @@ class Relay {
     if (this.clients.has(client.id)) {
       this.broadcast('mmo.move', presenceOf(client), client.id);
     }
+    fieldRefreshAuthorities(this, client.map,
+      session && this.clients.get(session.a) && this.clients.get(session.a).map,
+      session && this.clients.get(session.b) && this.clients.get(session.b).map);
     this.noteRosterChange();
   }
 
@@ -2524,6 +2689,7 @@ class Relay {
 
     this.broadcast('mmo.move', presenceOf(a), a.id);
     this.broadcast('mmo.move', presenceOf(b), b.id);
+    fieldRefreshAuthorities(this, a.map, b.map);
     this.noteRosterChange();
     this.log.info(`session ${id}: ${safe(a.name)} <-> ${safe(b.name)} (${kind})`);
 

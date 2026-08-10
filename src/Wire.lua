@@ -170,6 +170,18 @@ M.FRIEND_ASK    = "mmo.friend_ask"
 M.FRIEND_ANSWER = "mmo.friend_answer"
 M.FRIEND_REMOVE = "mmo.friend_remove"
 
+-- Session-scoped field populations. Domain owners provide renderer-neutral
+-- records; the hub only validates, revisions, arbitrates claims, and relays.
+M.FIELD_REQUEST  = "mmo.field_request"
+M.FIELD_SEED     = "mmo.field_seed"
+M.FIELD_PUBLISH  = "mmo.field_publish"
+M.FIELD_CONSUME  = "mmo.field_consume"
+M.FIELD_CLAIM    = "mmo.field_claim"
+M.FIELD_GRANTED  = "mmo.field_granted"
+M.FIELD_DENIED   = "mmo.field_denied"
+M.FIELD_SNAPSHOT = "mmo.field_snapshot"
+M.FIELD_NEEDED   = "mmo.field_needed"
+
 -- The character you are wearing, changed mid-session.  One name for both
 -- directions, the way CHAT is: outbound it carries { sprite }, and the hub
 -- answers everybody -- the sender included, the way RANK does -- with
@@ -533,6 +545,130 @@ function M.convoy(raw)
           hop = row.hop == true,
         }
       end
+    end
+  end
+  return out
+end
+
+local FIELD_BEHAVIORS = {
+  IDLE_LOOK = true, GRASS_WANDER = true, AGGRESSIVE = true,
+  HIDDEN_GRASS = true, HIDDEN_CAVE = true,
+  WATER_IDLE = true, WATER_WANDER = true, WATER_AGGRESSIVE = true,
+  SAFARI_IDLE = true, SAFARI_WANDER = true, SAFARI_FLEE = true,
+}
+local FIELD_SURFACES = {
+  GRASS = true, CAVE = true, WATER = true,
+  INTERIOR = true, OTHER_ENCOUNTER = true,
+}
+local FIELD_KINDS = { grass = true, water = true }
+local FIELD_AGGRO = { ALERT = true, CHASE = true, CONTACT = true }
+local FIELD_DOMAINS = { GROUND = true, SKY = true, AMBIENT = true, NPC = true }
+local AMBIENT_BEHAVIORS = { IDLE = true, WANDER = true }
+local SKY_MODES = {
+  roam = true, ground = true, rise = true, toLand = true,
+  leave = true, summon = true,
+}
+
+local function denseArray(value, limit)
+  if type(value) ~= "table" then return nil end
+  local count, maximum = 0, 0
+  for key in pairs(value) do
+    if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then
+      return nil
+    end
+    count = count + 1
+    if key > maximum then maximum = key end
+    if count > limit then return nil end
+  end
+  if maximum ~= count then return nil end
+  return count
+end
+
+-- One canonical field population. It is refused whole rather than shortened:
+-- a partial population would make two clients collide with different actors.
+function M.fieldSnapshot(raw)
+  if type(raw) ~= "table" then return nil end
+  local map = M.mapId(raw.map)
+  local domain = raw.domain == nil and "GROUND"
+    or (FIELD_DOMAINS[raw.domain] and raw.domain or nil)
+  local revision = M.int(raw.revision, 0, 2147483647)
+  local epoch = M.int(raw.epoch or 0, 0, 2147483647)
+  local count = denseArray(raw.spawns, 24)
+  if not map or not domain or revision == nil or epoch == nil or count == nil then
+    return nil
+  end
+
+  local out = { domain = domain, map = map, epoch = epoch,
+    revision = revision, spawns = {} }
+  local seen = {}
+  for i = 1, count do
+    local row = raw.spawns[i]
+    if type(row) ~= "table" then return nil end
+    local id = type(row.id) == "string" and #row.id <= 40 and M.id(row.id) or nil
+    local x = M.int(row.x, 0, domain == "SKY" and 65535 or 4096)
+    local y = M.int(row.y, 0, domain == "SKY" and 65535 or 4096)
+    if not id or seen[id] or x == nil or y == nil then return nil end
+    seen[id] = true
+
+    if domain == "NPC" then
+      local moving, marching = row.moving == true, row.marching == true
+      local targetX = row.targetX ~= nil and M.int(row.targetX, 0, 4096) or nil
+      local targetY = row.targetY ~= nil and M.int(row.targetY, 0, 4096) or nil
+      local progress = M.int(row.progress or 0, 0, 32)
+      if progress == nil or (moving and not marching and
+          (targetX == nil or targetY == nil)) then return nil end
+      local clean = { id = id, map = map, x = x, y = y,
+        facing = M.facing(row.facing) or "down", moving = moving,
+        progress = progress, marching = marching, stepFlip = row.stepFlip == true }
+      if targetX ~= nil and targetY ~= nil then
+        clean.targetX, clean.targetY = targetX, targetY
+      end
+      out.spawns[#out.spawns + 1] = clean
+    elseif domain == "SKY" then
+      local species = M.spriteId(row.species)
+      local level = M.int(row.level, 1, 100)
+      local alt = M.int(row.alt, 0, 512)
+      local mode = SKY_MODES[row.mode] and row.mode or nil
+      local vx = row.vx ~= nil and M.int(row.vx, -256, 256) or nil
+      local vy = row.vy ~= nil and M.int(row.vy, -256, 256) or nil
+      if not species or level == nil or alt == nil or not mode or
+          ((row.vx ~= nil or row.vy ~= nil) and (vx == nil or vy == nil)) then
+        return nil
+      end
+      local clean = { id = id, map = map, species = species, level = level,
+        x = x, y = y, alt = alt, facing = M.facing(row.facing) or "right",
+        mode = mode, bold = row.bold == true }
+      if vx ~= nil then clean.vx, clean.vy = vx, vy end
+      out.spawns[#out.spawns + 1] = clean
+    elseif domain == "AMBIENT" then
+      local species = M.spriteId(row.species)
+      local behavior = AMBIENT_BEHAVIORS[row.behavior] and row.behavior or nil
+      if not species or not behavior then return nil end
+      out.spawns[#out.spawns + 1] = {
+        id = id, map = map, species = species, x = x, y = y,
+        facing = M.facing(row.facing) or "down", behavior = behavior,
+        surface = "AMBIENT", kind = "ambient",
+      }
+    else
+      local species = M.spriteId(row.species)
+      local level = M.int(row.level, 1, 100)
+      local behavior = FIELD_BEHAVIORS[row.behavior] and row.behavior or nil
+      local surface = FIELD_SURFACES[row.surface] and row.surface or nil
+      local kind = FIELD_KINDS[row.kind] and row.kind or nil
+      local target = row.target ~= nil and type(row.target) == "string"
+        and #row.target <= 40 and M.id(row.target) or nil
+      local aggro = row.aggro ~= nil and FIELD_AGGRO[row.aggro] and row.aggro or nil
+      local aggressive = behavior == "AGGRESSIVE" or behavior == "WATER_AGGRESSIVE"
+      if not species or level == nil or not behavior or not surface or not kind then
+        return nil
+      end
+      if (row.target ~= nil or row.aggro ~= nil) and
+          (not target or not aggro or not aggressive) then return nil end
+      local clean = { id = id, map = map, species = species, level = level,
+        x = x, y = y, facing = M.facing(row.facing) or "down",
+        behavior = behavior, surface = surface, kind = kind }
+      if target then clean.target, clean.aggro = target, aggro end
+      out.spawns[#out.spawns + 1] = clean
     end
   end
   return out

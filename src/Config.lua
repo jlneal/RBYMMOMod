@@ -143,7 +143,11 @@ M.MOD_ID = "rby_mmo"
 --
 -- 25 adds the bounded display-only follower convoy carried with presence.
 -- A protocol-24 observer would silently omit it, so mixed builds are refused.
-M.PROTOCOL = 25
+--
+-- 26 adds session-scoped, revisioned field populations. Protocol-25 hubs do
+-- not understand their request/seed/publish/claim lifecycle, so mixed builds
+-- would silently fork the visible world instead of sharing one population.
+M.PROTOCOL = 26
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.
