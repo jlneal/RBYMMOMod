@@ -247,6 +247,7 @@ function M.new(opts)
     limit = Config.clampPlayers(opts.maxPlayers),
     coopExpEnabled = opts.coopExpEnabled ~= false,
     coopMoneyEnabled = opts.coopMoneyEnabled ~= false,
+    proximityJoinEnabled = opts.proximityJoinEnabled == true,
     -- Absent is nil, never "": a hub with no code admits anyone who says
     -- hello, which is a fixture, not a hosting mode -- see the header.
     -- Re-normalised on the way in because a code that does not survive
@@ -611,6 +612,7 @@ function M:admit(client)
     id = client.id, players = players, points = client.points,
     coopExpEnabled = self.coopExpEnabled,
     coopMoneyEnabled = self.coopMoneyEnabled,
+    proximityJoinEnabled = self.proximityJoinEnabled,
     ranked = true,
   })
   self:broadcast(Wire.JOIN, { player = presenceOf(client) }, client.id)
@@ -2511,6 +2513,7 @@ end
 -- is the *same* fight.  The last is what stops a modified client dragging its
 -- partner out of wherever they are into a battle they never walked up to.
 handlers[Wire.COOP_JOIN] = function(self, client, msg)
+  if msg.auto == true and not self.proximityJoinEnabled then return end
   if not client.ready or not client.partyId then return end
   local host = self.clients[Wire.id(msg.to) or ""]
   if not (host and host.ready) or host.id == client.id then return end

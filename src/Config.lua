@@ -154,11 +154,24 @@ M.MAX_PLAYERS = 64
 M.DEFAULT_PLAYERS = 4
 M.DEFAULT_COOP_EXP_ENABLED = true
 M.DEFAULT_COOP_MONEY_ENABLED = true
+M.DEFAULT_PROXIMITY_JOIN_ENABLED = false
+M.DEFAULT_AUTO_JOIN_RANGE = 0
+M.AUTO_JOIN_RANGE_MAX = 8
 
 function M.rewardEnabled(value, fallback)
   if value == nil then return fallback ~= false end
   return value == true or value == 1 or value == "1"
     or value == "true" or value == "on" or value == "yes"
+end
+
+function M.proximityEnabled(value)
+  return M.rewardEnabled(value, false)
+end
+
+function M.clampAutoJoinRange(value)
+  local n = tonumber(value)
+  if not n or n ~= n then return M.DEFAULT_AUTO_JOIN_RANGE end
+  return math.max(0, math.min(M.AUTO_JOIN_RANGE_MAX, math.floor(n)))
 end
 
 function M.clampPlayers(value)

@@ -111,7 +111,7 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // was never named. The rule every bump follows is unchanged: bump whenever a
 // client can send something a hub silently ignores. Kept in step with
 // Config.PROTOCOL on the mod side. 19 adds host-owned co-op gameplay policy;
-// a protocol-18 client would ignore disabled rewards and pay them anyway.
+// a protocol-18 client would ignore disabled rewards or automatic-join policy.
 const PROTOCOL = 19;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
@@ -793,6 +793,7 @@ handlers['mmo.coop_cancel'] = (relay, client, msg) => {
 // the *same* fight. The last is what stops a modified client dragging its
 // partner out of wherever they are into a battle they never walked up to.
 handlers['mmo.coop_join'] = (relay, client, msg) => {
+  if (msg.auto === true && !relay.proximityJoinEnabled) return;
   if (!client.ready || !client.partyId) return;
   const host = relay.get(cleanId(msg.to));
   if (!host || !host.ready || host.id === client.id) return;
@@ -1210,6 +1211,7 @@ class Relay {
     this.maxPlayers = Number.isFinite(cap) ? cap : DEFAULT_PLAYERS;
     this.coopExpEnabled = opts.coopExpEnabled !== false;
     this.coopMoneyEnabled = opts.coopMoneyEnabled !== false;
+    this.proximityJoinEnabled = opts.proximityJoinEnabled === true;
     this.chatIntervalMs = Number.isFinite(Number(opts.chatIntervalMs))
       ? Number(opts.chatIntervalMs) : 500;
     this.protocol = Number.isFinite(Number(opts.protocol))
@@ -1752,6 +1754,7 @@ class Relay {
       points: client.points,
       coopExpEnabled: this.coopExpEnabled,
       coopMoneyEnabled: this.coopMoneyEnabled,
+      proximityJoinEnabled: this.proximityJoinEnabled,
       ranked: client.ranked,
       motd: motd || undefined,
       admin: client.admin || undefined,

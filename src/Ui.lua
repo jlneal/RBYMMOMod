@@ -81,6 +81,7 @@ local SCREEN = {
   PICK     = "RbyMmoPick",
   HOSTSET  = "RbyMmoHostSetup",
   HOSTSIZE = "RbyMmoHostSize",
+  PROXDIST = "RbyMmoProximityDistance",
   HOSTCODE = "RbyMmoHostCode",
   HOSTINFO = "RbyMmoHostInfo",
   JOINADDR = "RbyMmoJoinAddress",
@@ -1205,6 +1206,17 @@ function M:install()
           label = "PARTY",
           onSelect = function() mod.ui.push(game, SCREEN.PARTY) end,
         }
+        -- The host grants the capability; this player opts in by choosing a
+        -- nonzero radius. Hide an inert preference when the host forbids it.
+        if type(client.proximityJoinAllowed) == "function"
+           and client:proximityJoinAllowed() then
+          local distance = client:autoJoinRange()
+          items[#items + 1] = {
+            label = "PROX DIST",
+            right = distance == 0 and "OFF" or tostring(distance),
+            onSelect = function() mod.ui.push(game, SCREEN.PROXDIST) end,
+          }
+        end
         -- The other side of PLAYERS: that one shows you everybody else's
         -- card, and until now there was no way to see the one they are
         -- reading about you. Same screen, same rows -- so what you check
@@ -1498,12 +1510,15 @@ function M:install()
     if not code then code = client:setHostJoinCode(client:newJoinCode()) end
     local coopExp = client:hostCoopExpEnabled()
     local coopMoney = client:hostCoopMoneyEnabled()
+    local proximityJoin = client:hostProximityJoinEnabled()
     local items = {
       { label = "PLAYERS", right = tostring(client:maxPlayers()), key = "players" },
       { label = "CO-OP EXP", right = coopExp and "ON" or "OFF",
         key = "coopexp" },
       { label = "CO-OP MONEY", right = coopMoney and "ON" or "OFF",
         key = "coopmoney" },
+      { label = "PROX JOIN", right = proximityJoin and "ON" or "OFF",
+        key = "proximityjoin" },
       -- "SET ONE" only when the pool could not mint one; the row still
       -- leads to the screen that fixes it, so the way out never moves
       { label = "JOIN CODE", right = code and codeText(code) or "SET ONE",
@@ -1520,6 +1535,10 @@ function M:install()
           mod.ui.push(game, SCREEN.HOSTSET)
         elseif item.key == "coopmoney" then
           client:setHostCoopMoneyEnabled(not client:hostCoopMoneyEnabled())
+          mod.ui.push(game, SCREEN.HOSTSET)
+        elseif item.key == "proximityjoin" then
+          client:setHostProximityJoinEnabled(
+            not client:hostProximityJoinEnabled())
           mod.ui.push(game, SCREEN.HOSTSET)
         elseif item.key == "code" then
           mod.ui.push(game, SCREEN.HOSTCODE)
@@ -1614,6 +1633,34 @@ function M:install()
       onCancel = function() mod.ui.push(game, SCREEN.HOSTSET) end,
     })
     -- open on what is already configured, so confirming is one button
+    menu.index = start
+    menu:clampScroll()
+    return menu
+  end })
+
+  screens:register(SCREEN.PROXDIST, { new = function(game)
+    local client = ctx.client
+    if not client:proximityJoinAllowed() then
+      return mod.ui.TextBox.new(game, "Proximity joining\nis disabled here.",
+        function() mod.ui.push(game, SCREEN.MAIN) end)
+    end
+    local current = client:autoJoinRange()
+    local items, start = {}, 1
+    for distance = 0, Config.AUTO_JOIN_RANGE_MAX do
+      local chosenDistance = distance
+      if distance == current then start = distance + 1 end
+      items[#items + 1] = {
+        label = distance == 0 and "OFF" or (tostring(distance) .. " TILES"),
+        onSelect = function()
+          client:setAutoJoinRange(chosenDistance)
+          mod.ui.push(game, SCREEN.MAIN)
+        end,
+      }
+    end
+    local menu = mod.ui.Menu.new(game, items, {
+      tx = 8, ty = 0, tw = 12, maxVisible = 8,
+      onCancel = function() mod.ui.push(game, SCREEN.MAIN) end,
+    })
     menu.index = start
     menu:clampScroll()
     return menu

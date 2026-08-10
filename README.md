@@ -422,6 +422,11 @@ prize money — and no points, and says as much the first time you win one.
 The host may turn **CO-OP EXP** and **CO-OP MONEY** off independently before
 starting the session; player-vs-player battles never pay either reward.
 
+The host may also enable **PROX JOIN** before starting. Each connected player
+then gets a **PROX DIST** row: `OFF` keeps manual joining, while 1–8 tiles opts
+that player into automatically joining a nearby partner's waiting co-op fight.
+The host policy is fixed for the life of the session.
+
 **A party battle is scored as a team battle.** Each of the four is rated
 against the *other pair's* combined strength — which is the match they actually
 played, since both of you attack both of them and you lose together. Not two

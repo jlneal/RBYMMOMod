@@ -80,10 +80,17 @@ friends.busy = function(game)
 end
 local sessionCoopExpEnabled = Config.DEFAULT_COOP_EXP_ENABLED
 local sessionCoopMoneyEnabled = Config.DEFAULT_COOP_MONEY_ENABLED
+local sessionProximityJoinEnabled = Config.DEFAULT_PROXIMITY_JOIN_ENABLED
 local coop = Coop.new(transport, ui, party, ctx.roster, ctx.chat, function()
   return sessionCoopExpEnabled
 end, function()
   return sessionCoopMoneyEnabled
+end, function()
+  return sessionProximityJoinEnabled
+end, function()
+  return M.autoJoinRange()
+end, function()
+  return World.current()
 end)
 -- Co-op can be mid-handoff with no screen yet (running/state set, stack
 -- still overworld). Sessions asks this so a 1v1 invite is refused there
@@ -265,6 +272,36 @@ function M.setHostCoopMoneyEnabled(a, b)
     Config.DEFAULT_COOP_MONEY_ENABLED)
   mod.save:set("coopmoney", enabled)
   return enabled
+end
+
+function M.hostProximityJoinEnabled()
+  local stored = mod.save:get("proximityjoin")
+  if stored ~= nil then return Config.proximityEnabled(stored) end
+  return Config.proximityEnabled(mod.options:get("proximityjoin"))
+end
+
+function M.setHostProximityJoinEnabled(a, b)
+  local enabled = Config.proximityEnabled(arg1(a, b))
+  mod.save:set("proximityjoin", enabled)
+  return enabled
+end
+
+-- Per-player opt-in. Kept even when the current host disables proximity so a
+-- later permissive session can restore the player's chosen radius.
+function M.autoJoinRange()
+  local stored = mod.save:get("autojoinrange")
+  if stored ~= nil then return Config.clampAutoJoinRange(stored) end
+  return Config.clampAutoJoinRange(mod.options:get("autojoinrange"))
+end
+
+function M.setAutoJoinRange(a, b)
+  local range = Config.clampAutoJoinRange(arg1(a, b))
+  mod.save:set("autojoinrange", range)
+  return range
+end
+
+function M.proximityJoinAllowed()
+  return M.isConnected() and sessionProximityJoinEnabled == true
 end
 
 -- arg1 so the colon form the menus use (client:setMaxPlayers(n)) does not
@@ -1170,6 +1207,7 @@ function M.host(a, b)
   local ok, err = server:start(Config.DEFAULT_PORT, limit, M.hostJoinCode(), {
     coopExpEnabled = M.hostCoopExpEnabled(),
     coopMoneyEnabled = M.hostCoopMoneyEnabled(),
+    proximityJoinEnabled = M.hostProximityJoinEnabled(),
   })
   if not ok then
     ui:say(tostring(err or "Couldn't start hosting."))
@@ -1252,6 +1290,7 @@ function M.disconnect()
   coop:reset()
   sessionCoopExpEnabled = Config.DEFAULT_COOP_EXP_ENABLED
   sessionCoopMoneyEnabled = Config.DEFAULT_COOP_MONEY_ENABLED
+  sessionProximityJoinEnabled = Config.DEFAULT_PROXIMITY_JOIN_ENABLED
   ctx.avatars:clear()
   ctx.roster:reset()
   ctx.chat:clear()
@@ -1540,6 +1579,7 @@ handlers[Wire.WELCOME] = function(game, msg)
   friends:setHub(dialled, M.playerName(game))
   sessionCoopExpEnabled = msg.coopExpEnabled ~= false
   sessionCoopMoneyEnabled = msg.coopMoneyEnabled ~= false
+  sessionProximityJoinEnabled = msg.proximityJoinEnabled == true
   -- your own rating, which cannot come from the roster: it has no entry for
   -- you, by design
   myPoints = Wire.points(msg.points)

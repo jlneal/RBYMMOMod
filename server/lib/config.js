@@ -55,6 +55,7 @@ const DEFAULTS = {
   listen: { host: '0.0.0.0', port: 7788 },
   maxPlayers: 4,
   gameplay: {
+    proximityJoinEnabled: false,
     coopExpEnabled: true,
     coopMoneyEnabled: true,
   },
@@ -210,6 +211,7 @@ const ENV_MAP = {
   RBY_MMO_HOST: 'listen.host',
   RBY_MMO_PORT: 'listen.port',
   RBY_MMO_MAX: 'maxPlayers',
+  RBY_MMO_PROXIMITY_JOIN: 'gameplay.proximityJoinEnabled',
   RBY_MMO_COOP_EXP: 'gameplay.coopExpEnabled',
   RBY_MMO_COOP_MONEY: 'gameplay.coopMoneyEnabled',
   RBY_MMO_AUTH_REQUIRED: 'auth.required',
@@ -246,6 +248,7 @@ const FLAG_MAP = {
   port: 'listen.port',
   max: 'maxPlayers',
   maxPlayers: 'maxPlayers',
+  proximityJoin: 'gameplay.proximityJoinEnabled',
   coopExp: 'gameplay.coopExpEnabled',
   coopMoney: 'gameplay.coopMoneyEnabled',
   auth: 'auth.required',
@@ -577,6 +580,7 @@ function validate(config) {
   for (const dotted of Object.keys(BOUNDS)) clampNumber(working, dotted, warnings);
 
   validateBoolean(working, 'auth.required', warnings);
+  validateBoolean(working, 'gameplay.proximityJoinEnabled', warnings);
   validateBoolean(working, 'gameplay.coopExpEnabled', warnings);
   validateBoolean(working, 'gameplay.coopMoneyEnabled', warnings);
   validateBoolean(working, 'network.upnp.enabled', warnings);

@@ -57,7 +57,8 @@ local M = {}
 M.__index = M
 
 function M.new(transport, ui, party, roster, chat, coopExpEnabled,
-               coopMoneyEnabled)
+               coopMoneyEnabled, proximityJoinEnabled, autoJoinRange,
+               currentPosition)
   return setmetatable({
     transport = transport,
     ui = ui,
@@ -68,6 +69,12 @@ function M.new(transport, ui, party, roster, chat, coopExpEnabled,
       or function() return true end,
     coopMoneyEnabled = type(coopMoneyEnabled) == "function" and coopMoneyEnabled
       or function() return true end,
+    proximityJoinEnabled = type(proximityJoinEnabled) == "function"
+      and proximityJoinEnabled or function() return false end,
+    autoJoinRange = type(autoJoinRange) == "function" and autoJoinRange
+      or function() return 0 end,
+    currentPosition = type(currentPosition) == "function" and currentPosition
+      or function() return nil end,
     -- our own standing offer: { battle, label, map, start }
     waiting = nil,
     -- the partner's, as it arrived: { from, name, battle, label, map, clock }
@@ -111,6 +118,33 @@ end
 function M:coopMoneyAllowed()
   return type(self.coopMoneyEnabled) ~= "function"
     or self.coopMoneyEnabled() ~= false
+end
+
+function M:proximityJoinAllowed()
+  return self.proximityJoinEnabled() == true
+end
+
+function M:configuredAutoJoinRange()
+  if not self:proximityJoinAllowed() then return 0 end
+  return Config.clampAutoJoinRange(self.autoJoinRange())
+end
+
+function M.withinAutoJoin(current, remote, range)
+  range = Config.clampAutoJoinRange(range)
+  if range <= 0 or not (current and remote) then return false end
+  if current.mapId ~= remote.map then return false end
+  if not (tonumber(current.x) and tonumber(current.y)
+      and tonumber(remote.x) and tonumber(remote.y)) then return false end
+  return math.max(math.abs(current.x - remote.x),
+                  math.abs(current.y - remote.y)) <= range
+end
+
+function M:autoJoinInRange(game, offer)
+  local range = self:configuredAutoJoinRange()
+  if range <= 0 or self:inFight(game) then return false end
+  local current = self.currentPosition()
+  local remote = offer and self.roster and self.roster:get(offer.from)
+  return M.withinAutoJoin(current, remote, range)
 end
 
 -- ------- naming a fight
@@ -1282,9 +1316,14 @@ function M:onOffer(game, msg, myMap)
   if offer.mode ~= "coop_wild" then
     self:note(("%s is waiting at %s."):format(offer.name, fightName(offer.label)))
   end
+  if self:autoJoinInRange(game, offer) then
+    self.offer = nil
+    self.transport:send(Wire.COOP_JOIN,
+      { to = offer.from, battle = offer.battle, auto = true })
+    return
+  end
   -- Invite like a 2-on-2 ask: same map, and free to answer. Off-map stays a
-  -- note + JOIN row until considerOffer runs on map.entered. coop_wild
-  -- auto-joins from considerOffer when free on-map.
+  -- note + JOIN row until considerOffer runs on map.entered.
   self:considerOffer(game, myMap)
 end
 

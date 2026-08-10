@@ -514,6 +514,7 @@ function testValueFor(dotted) {
   }
   switch (dotted) {
     case 'listen.host': return { raw: '127.0.0.2', expected: '127.0.0.2' };
+    case 'gameplay.proximityJoinEnabled': return { raw: 'true', expected: true };
     case 'auth.required': return { raw: 'false', expected: false };
     case 'gameplay.coopExpEnabled': return { raw: 'false', expected: false };
     case 'gameplay.coopMoneyEnabled': return { raw: 'false', expected: false };

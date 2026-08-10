@@ -556,6 +556,8 @@ function start(options = {}) {
     maxPlayers: config.maxPlayers,
     coopExpEnabled: config.gameplay && config.gameplay.coopExpEnabled,
     coopMoneyEnabled: config.gameplay && config.gameplay.coopMoneyEnabled,
+    proximityJoinEnabled: config.gameplay
+      && config.gameplay.proximityJoinEnabled,
     chatIntervalMs: config.limits && config.limits.chatIntervalMs,
     board,
     onRankChange: () => noteRankChange(),

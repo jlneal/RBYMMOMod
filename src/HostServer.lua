@@ -157,6 +157,7 @@ function M:start(port, maxPlayers, joinCode, opts)
     joinCode = code,
     coopExpEnabled = opts.coopExpEnabled,
     coopMoneyEnabled = opts.coopMoneyEnabled,
+    proximityJoinEnabled = opts.proximityJoinEnabled,
     onDrop = function(reason, clientId)
       mod.log:warn("refused a relayed message from player %s (%s); "
         .. "if a trade or battle stalled, this is why -- ask them to "
