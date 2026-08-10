@@ -22,6 +22,8 @@ local Chat = need("Chat")
 local Toast = need("Toast")
 local Party = need("Party")
 local Friends = need("Friends")
+local SharedField = need("SharedField")
+local NpcField = need("NpcField")
 local Coop = need("Coop")
 -- For one flag it owns. Required rather than reached through `coop.state`,
 -- which is an *instance* and is nil between battles -- which is exactly when
@@ -172,6 +174,39 @@ end, function()
   return sessionOffMapJoinEnabled
 end)
 coop.battleContext = battleContext
+
+local sharedGround = SharedField.new(transport, party, ctx.roster, {
+  registerExport = "setSharedFieldProvider",
+  resetExport = "resetSharedField",
+  acceptContact = function(map, id, target)
+    local current = World.current()
+    return party:isSelf(target) and Wire.mapId(map) ~= nil
+      and current and current.mapId == map
+      and type(id) == "string" and #id <= 40 and Wire.id(id) ~= nil
+      and not sessions:isBusy() and coop.running ~= true and coop.state == nil
+  end,
+})
+local sharedAmbient = SharedField.new(transport, party, ctx.roster, {
+  domain = "AMBIENT",
+  snapshotExport = "sharedAmbientFieldSnapshot",
+  applyExport = "applySharedAmbientFieldSnapshot",
+  clearExport = "clearSharedAmbientField",
+  resetExport = "resetSharedAmbientField",
+  neighborExport = "sharedAmbientNeighborMaps",
+})
+local npcSync = NpcField.new()
+local sharedNpc = SharedField.new(transport, party, ctx.roster, {
+  domain = "NPC",
+  exports = {
+    snapshot = function(map) return npcSync:snapshot(map) end,
+    apply = function(snapshot) return npcSync:apply(snapshot) end,
+    clear = function() return npcSync:clear() end,
+    neighbors = function() return npcSync:neighbors() end,
+  },
+  snapshotExport = "snapshot", applyExport = "apply",
+  clearExport = "clear", neighborExport = "neighbors",
+  publishInterval = 0.1,
+})
 -- Co-op can be mid-handoff with no screen yet (running/state set, stack
 -- still overworld). Sessions asks this so a 1v1 invite is refused there
 -- the same way a wild battle on the stack is.
@@ -185,12 +220,16 @@ ctx.toast = toast
 ctx.sessions = sessions
 ctx.party = party
 ctx.friends = friends
+ctx.sharedGround = sharedGround
+ctx.sharedAmbient = sharedAmbient
+ctx.sharedNpc = sharedNpc
 ctx.coop = coop
 ctx.server = server
 ctx.servers = servers
 
 local presenceClock = 0
 local convoySnapshot
+local pendingTransitionVia
 local lastSent =
   { map = nil, x = nil, y = nil, facing = nil, busy = nil, fast = nil,
     convoy = nil }
@@ -1403,6 +1442,11 @@ function M.disconnect()
   -- because for them syncLook *is* the restore.
   M.syncLook()
   sessions:endSession(nil)
+  -- Field scope is the whole connection, not the optional two-player party.
+  -- Restore every provider before the transport and identity disappear.
+  sharedGround:reset()
+  sharedAmbient:reset()
+  sharedNpc:reset()
   party:reset()
   -- The list itself is on disk and stays there; what goes is the *open*
   -- bucket, because which list is open is a fact about one connection. Leaving
@@ -1441,6 +1485,7 @@ function M.disconnect()
   -- rejoined standing still would otherwise advertise fast=true in their
   -- hello and go on doing so until they took a step to clear it.
   M.fastNow = false
+  pendingTransitionVia = nil
   dialled, authSent = nil, false
   -- A rating belongs to the hub that keeps it, so leaving takes it off the
   -- screen rather than leaving a stale number on your own card in
@@ -1655,7 +1700,9 @@ local function pushPresence(force, game)
     busy = busy,
     fast = fast,
     convoy = convoy,
+    transition = pendingTransitionVia,
   })
+  pendingTransitionVia = nil
 end
 
 -- ------- inbound dispatch
@@ -2039,6 +2086,21 @@ handlers[Wire.COOP_OFFER] = function(game, msg)
   local current = World.current()
   coop:onOffer(game, msg, current and current.mapId)
 end
+
+handlers[Wire.FIELD_NEEDED] = function(_, msg)
+  sharedGround:onNeeded(msg)
+  sharedAmbient:onNeeded(msg)
+  sharedNpc:onNeeded(msg)
+end
+
+handlers[Wire.FIELD_SNAPSHOT] = function(_, msg)
+  sharedGround:onSnapshot(msg)
+  sharedAmbient:onSnapshot(msg)
+  sharedNpc:onSnapshot(msg)
+end
+
+handlers[Wire.FIELD_GRANTED] = function(_, msg) sharedGround:onGranted(msg) end
+handlers[Wire.FIELD_DENIED] = function(_, msg) sharedGround:onDenied(msg) end
 handlers[Wire.COOP_OFFER_END] = function(_, msg) coop:onOfferEnd(msg) end
 handlers[Wire.COOP_JOINED] = function(game, msg) coop:onJoined(game, msg) end
 handlers[Wire.COOP_ASK] = function(game, msg) coop:onAsk(game, msg) end
@@ -2257,6 +2319,9 @@ local function tick(game, dt)
   -- over. Two field reads on every other tick: the queue is empty on all but a
   -- handful of them, and _drain answers on the first one.
   friends:update(game, dt)
+  sharedGround:update(dt)
+  sharedAmbient:update(dt)
+  sharedNpc:update(dt)
 
   presenceClock = presenceClock + dt
   if presenceClock >= Config.PRESENCE_INTERVAL then
@@ -2510,8 +2575,12 @@ function M.install()
   -- A warp is the one movement the tile-by-tile presence stream cannot
   -- describe, so it is announced the moment it lands instead of waiting for
   -- the next interval.
-  mod.events:on("player.warped", function() pushPresence(true) end)
-  mod.events:on("map.entered", function()
+  mod.events:on("player.warped", function()
+    pendingTransitionVia = "warp"
+    pushPresence(true)
+  end)
+  mod.events:on("map.entered", function(ev)
+    pendingTransitionVia = ev and ev.via or pendingTransitionVia
     pushPresence(true)
     M.refreshLook()
     -- A partner's NPC invite that arrived while we were off-map (or that we
@@ -2653,6 +2722,9 @@ function M.install()
   -- them -- empty when you are not in a party. The end-to-end driver reads
   -- this to tell "the invite was accepted" from "the box appeared".
   mod.exports.party = function() return party:list() end
+  mod.exports.sharedGroundField = function() return sharedGround:state() end
+  mod.exports.sharedAmbientField = function() return sharedAmbient:state() end
+  mod.exports.sharedNpcField = function() return sharedNpc:state() end
   -- Co-op, as the end-to-end driver has to be able to read it: whether this
   -- client is standing at a fight waiting, what its partner is offering, and
   -- the plan the last agreement produced. Three separate answers because the
