@@ -92,6 +92,12 @@ function M:setParty(id, party)
   return player
 end
 
+function M:setConvoy(id, convoy)
+  local player = self.players[id]
+  if player then player.convoy = convoy or {} end
+  return player
+end
+
 -- The character somebody is wearing, changed mid-session.  The picker is
 -- reachable from the connected menu now, so a face is one more thing that
 -- moves while its player stands still, and the hub rebroadcasts the change

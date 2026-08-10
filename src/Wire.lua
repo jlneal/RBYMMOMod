@@ -515,6 +515,29 @@ function M.mapId(value)
   return value:sub(1, 64)
 end
 
+-- Display-only Pokémon travelling behind a remote trainer. Gameplay-bearing
+-- fields are deliberately absent: no HP, level, moves, nickname, OT, or DVs.
+function M.convoy(raw)
+  local out = {}
+  if type(raw) ~= "table" then return out end
+  for _, row in ipairs(raw) do
+    if #out >= 6 then break end
+    if type(row) == "table" then
+      local species = M.spriteId(row.species)
+      local x, y = M.int(row.x, 0, 4096), M.int(row.y, 0, 4096)
+      if species and x and y then
+        out[#out + 1] = {
+          species = species, form = M.spriteId(row.form),
+          shiny = row.shiny == true, map = M.mapId(row.map), x = x, y = y,
+          facing = M.facing(row.facing) or "down", fast = row.fast == true,
+          hop = row.hop == true,
+        }
+      end
+    end
+  end
+  return out
+end
+
 -- Is this relay payload a shape we are willing to pass on?
 --
 -- The hub never reads a relay payload -- it is the engine's link vocabulary
@@ -903,6 +926,7 @@ function M.presence(raw)
     -- reaching Lua as 0 or "" would be true here and false in JS.  Comparing
     -- against true is the one test both languages answer identically.
     fast = raw.fast == true,
+    convoy = M.convoy(raw.convoy),
     profile = M.profile(raw.profile),
     -- Ranked points ride with presence rather than with the trainer card,
     -- because they are not a snapshot of who somebody was when they joined:

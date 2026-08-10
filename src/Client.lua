@@ -190,8 +190,10 @@ ctx.server = server
 ctx.servers = servers
 
 local presenceClock = 0
+local convoySnapshot
 local lastSent =
-  { map = nil, x = nil, y = nil, facing = nil, busy = nil, fast = nil }
+  { map = nil, x = nil, y = nil, facing = nil, busy = nil, fast = nil,
+    convoy = nil }
 
 -- Whether the last step this player committed was a fast one -- sprinted
 -- with B on foot, *or* taken on the bike.  Not "was it a run": a run and a
@@ -1388,6 +1390,7 @@ function M.sendHello(game)
     x = current and current.x,
     y = current and current.y,
     facing = current and current.facing,
+    convoy = convoySnapshot(game),
   })
 end
 
@@ -1424,7 +1427,8 @@ function M.disconnect()
   toast:clear()
   transport:close()
   lastSent =
-    { map = nil, x = nil, y = nil, facing = nil, busy = nil, fast = nil }
+    { map = nil, x = nil, y = nil, facing = nil, busy = nil, fast = nil,
+      convoy = nil }
   -- Cleared for the same reason lastSent is: what a hub is holding for us is
   -- a fact about one connection. Carrying it across would have the next
   -- session's reconcile weigh the choice against a hub that never heard it --
@@ -1568,7 +1572,45 @@ end
 
 -- ------- presence
 
-local function presenceChanged(current, busy, fast)
+convoySnapshot = function(game)
+  local exports = game and game.mods and game.mods.exports
+  local wilds = exports and exports.overworld_wild_spawns
+  if not (wilds and type(wilds.convoySnapshot) == "function") then return {} end
+  local ok, rows = pcall(wilds.convoySnapshot, game)
+  return ok and Wire.convoy(rows) or {}
+end
+
+local function convoySignature(rows)
+  local parts = {}
+  for i, row in ipairs(rows or {}) do
+    parts[i] = table.concat({ row.species or "", row.form or "",
+      row.shiny and "1" or "0", row.map or "", row.x or "", row.y or "",
+      row.facing or "", row.fast and "1" or "0", row.hop and "1" or "0" }, ":")
+  end
+  return table.concat(parts, "|")
+end
+
+-- Presence and convoy rows describe animation destinations. Publishing the
+-- player's landing cell during a committed step keeps the lead follower from
+-- appearing on top of the trainer until both clocks land.
+function M.presencePosition(current, player)
+  if type(current) ~= "table" then return current end
+  local out = {}
+  for key, value in pairs(current) do out[key] = value end
+  if player and player.moving == true
+     and player.targetX ~= nil and player.targetY ~= nil then
+    out.x, out.y = player.targetX, player.targetY
+  end
+  return out
+end
+
+local function presenceCurrent()
+  local current = World.current()
+  local ow = mod.world and mod.world.overworld and mod.world:overworld() or nil
+  return M.presencePosition(current, ow and ow.player)
+end
+
+local function presenceChanged(current, busy, fast, convoySig)
   local mapId = current and current.mapId
   local x = current and current.x
   local y = current and current.y
@@ -1584,15 +1626,17 @@ local function presenceChanged(current, busy, fast)
     -- too, so today the checks above would carry it; the field is compared
     -- anyway so that a future writer of fastNow cannot silently strand a
     -- pace change until the next move.
-    or lastSent.fast ~= fast
+    or lastSent.fast ~= fast or lastSent.convoy ~= convoySig
 end
 
-local function pushPresence(force)
+local function pushPresence(force, game)
   if not transport:isReady() then return end
-  local current = World.current()
+  local current = presenceCurrent()
   local busy = sessions:isBusy()
   local fast = M.fastNow and true or false
-  if not force and not presenceChanged(current, busy, fast) then return end
+  local convoy = convoySnapshot(game or ctx.game)
+  local convoySig = convoySignature(convoy)
+  if not force and not presenceChanged(current, busy, fast, convoySig) then return end
 
   lastSent = {
     map = current and current.mapId,
@@ -1601,6 +1645,7 @@ local function pushPresence(force)
     facing = current and current.facing,
     busy = busy,
     fast = fast,
+    convoy = convoySig,
   }
   transport:send(Wire.MOVE, {
     map = lastSent.map,
@@ -1609,6 +1654,7 @@ local function pushPresence(force)
     facing = lastSent.facing,
     busy = busy,
     fast = fast,
+    convoy = convoy,
   })
 end
 
@@ -1919,6 +1965,7 @@ handlers[Wire.MOVE] = function(_, msg)
   local facing = Wire.facing(msg.facing)
   ctx.roster:setBusy(id, msg.busy)
   ctx.roster:setParty(id, msg.party)
+  ctx.roster:setConvoy(id, Wire.convoy(msg.convoy))
   -- Coerced here rather than trusted: this is the raw message, and the
   -- roster stores what it is given.  Strict, the way Wire.presence and both
   -- hubs are -- only a literal true is a fast step, so a client sending 0 or
@@ -2214,7 +2261,7 @@ local function tick(game, dt)
   presenceClock = presenceClock + dt
   if presenceClock >= Config.PRESENCE_INTERVAL then
     presenceClock = 0
-    pushPresence(false)
+    pushPresence(false, game)
   end
 
   -- The character, reconciled rather than resent. Shaped like the presence

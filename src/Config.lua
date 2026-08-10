@@ -140,7 +140,10 @@ M.MOD_ID = "rby_mmo"
 --
 -- 24 adds acknowledged bounded frames for packages above the single-message
 -- boundary, keeping at most one frame in flight per recipient.
-M.PROTOCOL = 24
+--
+-- 25 adds the bounded display-only follower convoy carried with presence.
+-- A protocol-24 observer would silently omit it, so mixed builds are refused.
+M.PROTOCOL = 25
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.

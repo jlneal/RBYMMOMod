@@ -81,6 +81,103 @@ function M.new()
   }, M)
 end
 
+function M:wildsExports()
+  if not (mod and type(mod.find) == "function") then return nil end
+  local ok, hit = pcall(mod.find, mod, "overworld_wild_spawns")
+  return ok and hit and type(hit.exports) == "table" and hit.exports or nil
+end
+
+local function followerIdentity(row)
+  return table.concat({ row.species or "", row.form or "",
+    row.shiny and "1" or "0" }, ":")
+end
+
+local function placeFollower(npc, row)
+  npc.cellX, npc.cellY = row.x, row.y
+  npc.px, npc.py = row.x * 16, row.y * 16
+  npc.targetX, npc.targetY, npc.hopStep = nil, nil, nil
+  npc.moving, npc.progress = false, 0
+  npc.facing = row.facing or npc.facing or "down"
+end
+
+function M:clearFollowers(av)
+  local followers = av and av.followers
+  if not followers then return end
+  local game = mod.world and mod.world.game
+  local ex = self:wildsExports()
+  for _, follower in ipairs(followers) do
+    if ex and type(ex.removeRemoteFollower) == "function" then
+      pcall(ex.removeRemoteFollower, game, follower.npc)
+    end
+  end
+  av.followers = {}
+end
+
+function M:followersDirty(av, rows)
+  local have = av.followers or {}
+  if #have ~= #rows then return true end
+  for i, row in ipairs(rows) do
+    if have[i].identity ~= followerIdentity(row) then return true end
+  end
+  return false
+end
+
+function M:advanceFollower(follower, row)
+  local npc = follower and follower.npc
+  if not (npc and row and row.x and row.y) then return end
+  if npc.moving then
+    if row.hop then follower.pendingHop = {
+      x = row.x, y = row.y, facing = row.facing, fast = row.fast, hop = true,
+      species = row.species,
+    } end
+    return
+  end
+  if follower.pendingHop then row, follower.pendingHop = follower.pendingHop, nil end
+  local dx, dy = row.x - (npc.cellX or row.x), row.y - (npc.cellY or row.y)
+  if dx == 0 and dy == 0 then npc.facing = row.facing or npc.facing; return end
+  if math.max(math.abs(dx), math.abs(dy)) > Config.RESYNC_DISTANCE then
+    return placeFollower(npc, row)
+  end
+  local dir, tx, ty
+  if row.hop and ((math.abs(dx) == 2 and dy == 0)
+      or (math.abs(dy) == 2 and dx == 0)) then
+    dir = dx > 0 and "right" or dx < 0 and "left" or dy > 0 and "down" or "up"
+    tx, ty, npc.hopStep = row.x, row.y, true
+  else
+    dir, tx, ty = M.stepToward(npc.cellX, npc.cellY, row.x, row.y)
+    npc.hopStep = nil
+  end
+  if not dir then return end
+  npc.facing, npc.targetX, npc.targetY = dir, tx, ty
+  npc.moving, npc.marching, npc.progress = true, false, 0
+  npc.stepFrames = row.fast and Config.FAST_STEP_FRAMES or nil
+end
+
+function M:syncFollowers(av, player)
+  -- When composed with a flight-presence provider, the mount is the avatar
+  -- and never also the first body in a ground convoy. Landing rebuilds the
+  -- complete latest snapshot atomically.
+  local rows = (player and player.airborne == true)
+    and {} or ((player and player.convoy) or {})
+  av.followers = av.followers or {}
+  local ex = self:wildsExports()
+  local game = mod.world and mod.world.game
+  if not (ex and game and type(ex.spawnRemoteFollower) == "function") then
+    if #av.followers > 0 then self:clearFollowers(av) end
+    return
+  end
+  if self:followersDirty(av, rows) then
+    self:clearFollowers(av)
+    for _, row in ipairs(rows) do
+      local ok, npc = pcall(ex.spawnRemoteFollower, game, row)
+      if ok and npc then av.followers[#av.followers + 1] = {
+        npc = npc, identity = followerIdentity(row),
+      } end
+    end
+  end
+  for i, row in ipairs(rows) do self:advanceFollower(av.followers[i], row) end
+end
+
 local function addIdentity(list, value)
   if not (list and value) then return end
   for _, row in ipairs(list) do if row == value then return end end
@@ -269,6 +366,7 @@ function M:spawn(player)
     x = player.x,
     y = player.y,
     facing = player.facing,
+    followers = {},
   }
 
   -- A handle the engine will not hand over yet is not a failed spawn: the
@@ -278,12 +376,14 @@ function M:spawn(player)
   -- kept because despawn cannot ask for it again; see there
   self.spawned[player.id].npc = npc
   M.decorate(npc)
+  self:syncFollowers(self.spawned[player.id], player)
   return npcId
 end
 
 function M:despawn(playerId)
   local av = self.spawned[playerId]
   if not av then return false end
+  self:clearFollowers(av)
   self.spawned[playerId] = nil
   -- The table itself, held since it was decorated, because the handle is no
   -- use here: WorldAPI:npc answers nil the moment its map stops being the
@@ -340,11 +440,16 @@ local function ownedAvatar(npc)
     and type(def.name) == "string" and def.name:match("^mmo_.+") ~= nil
 end
 
+local function ownedVisual(npc)
+  return ownedAvatar(npc) or (type(npc) == "table"
+    and npc.mmoRemoteFollower == true)
+end
+
 local function removeOrphans(list, keep)
   for i = #(list or {}), 1, -1 do
     local row = list[i]
     local npc = row and row.npc or row
-    if ownedAvatar(npc) and not keep[npc] then table.remove(list, i) end
+    if ownedVisual(npc) and not keep[npc] then table.remove(list, i) end
   end
 end
 
@@ -353,6 +458,9 @@ function M:purgeRestoredVisuals(ow)
   local keep = {}
   for _, av in pairs(self.spawned or {}) do
     if av.npc then keep[av.npc] = true end
+    for _, follower in ipairs(av.followers or {}) do
+      if follower.npc then keep[follower.npc] = true end
+    end
   end
   local before = #(ow.npcs or {}) + #(ow.entities or {}) + #(ow.ghosts or {})
   removeOrphans(ow.npcs, keep)
@@ -373,6 +481,12 @@ function M:reattachCurrentVisuals(ow)
     if av.npc then
       addIdentity(ow.npcs, av.npc)
       addIdentity(ow.entities, av.npc)
+    end
+    for _, follower in ipairs(av.followers or {}) do
+      if follower.npc then
+        addIdentity(ow.npcs, follower.npc)
+        addIdentity(ow.entities, follower.npc)
+      end
     end
   end
   M.prioritizeInteractions(ow)
@@ -484,6 +598,7 @@ function M:advance(av, player)
   -- Heals an avatar the engine rebuilt under us, and costs one comparison
   -- when it did not: decorate returns immediately on an already-marked NPC.
   M.decorate(npc)
+  self:syncFollowers(av, player)
 
   -- mid-step: let NPC:update finish it. Interrupting would strand px/py
   -- between two cells.
@@ -551,6 +666,17 @@ function M.projectPlayer(player, currentMapId, neighbors)
   local out = {}
   for key, value in pairs(player) do out[key] = value end
   out.map, out.x, out.y = currentMapId, x, y
+  out.convoy = {}
+  for _, row in ipairs(player.convoy or {}) do
+    local rx, ry = projectCell(row.map or player.map, row.x, row.y,
+                               currentMapId, neighbors)
+    if rx and ry then
+      local copy = {}
+      for key, value in pairs(row) do copy[key] = value end
+      copy.map, copy.x, copy.y = currentMapId, rx, ry
+      out.convoy[#out.convoy + 1] = copy
+    end
+  end
   return out
 end
 

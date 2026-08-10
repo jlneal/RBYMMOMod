@@ -48,6 +48,24 @@ function cleanInt(value, min, max) {
   return i >= min && i <= max ? i : null;
 }
 
+function cleanConvoy(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const row of value) {
+    if (out.length >= 6) break;
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) continue;
+    const species = cleanSpriteId(row.species);
+    const x = cleanInt(row.x, 0, 4096);
+    const y = cleanInt(row.y, 0, 4096);
+    if (!species || x === null || y === null) continue;
+    out.push({ species, form: cleanSpriteId(row.form), shiny: row.shiny === true,
+      map: cleanMapId(row.map), x, y,
+      facing: FACINGS.has(row.facing) ? row.facing : 'down',
+      fast: row.fast === true, hop: row.hop === true });
+  }
+  return out;
+}
+
 // An HMAC response off the wire. Lowercase only, because that is what both
 // Node's crypto and the mod's pure-Lua digest produce, and accepting the
 // other case would mean two spellings of the same credential.
@@ -1324,6 +1342,7 @@ module.exports = {
   cleanPartyEvent,
   cleanSpriteId,
   cleanMapId,
+  cleanConvoy,
   cleanInt,
   cleanHex,
   cleanCode,

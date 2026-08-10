@@ -38,7 +38,8 @@ const { cleanProgressionId } = require('./campaign-sanitize');
 
 const {
   cleanText, cleanId, cleanSpriteId, cleanMapId, cleanInt, cleanHex,
-  cleanProfile, cleanOutcome, cleanPoints, cleanPlayerId, payloadOk, FACINGS,
+  cleanProfile, cleanOutcome, cleanPoints, cleanPlayerId, cleanConvoy,
+  payloadOk, FACINGS,
   KINDS, SCOPES, NAME_MAX, MESSAGE_MAX, MOTD_MAX, LOCAL_RADIUS,
   cleanBattleKey, cleanCoopReason, cleanCoopOfferMode, cleanLabel, cleanPartyEvent, PARTY_MAX,
   cleanBattleRuleset, cleanBattleParty, cleanBattleChoice, cleanBattleReconnect,
@@ -126,7 +127,9 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // cannot attach the personal capture consequence safely.
 // 23 adds bounded same-world closed-prefix hydration packages.
 // 24 adds acknowledged one-at-a-time frames for larger prefix packages.
-const PROTOCOL = 24;
+// 25 adds the bounded display-only follower convoy carried with presence.
+// A protocol-24 observer would silently omit it, so mixed builds are refused.
+const PROTOCOL = 25;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right
@@ -266,6 +269,7 @@ function presenceOf(client) {
     // the bike, so the client is the only authority on it and this is the
     // value it last reported.
     fast: Boolean(client.fast),
+    convoy: client.convoy || [],
     // The trainer card the player shows others. Carried here because
     // src/Hub.lua does (Hub.lua:74): a player on a dedicated hub would
     // otherwise silently have no card, and the two hosting paths have to
@@ -336,6 +340,7 @@ handlers['mmo.hello'] = (relay, client, msg) => {
     x: cleanInt(msg.x, 0, 4096),
     y: cleanInt(msg.y, 0, 4096),
     facing: FACINGS.has(msg.facing) ? msg.facing : 'down',
+    convoy: cleanConvoy(msg.convoy),
   };
 
   if (!relay.auth) return relay.admit(client);
@@ -415,6 +420,7 @@ handlers['mmo.move'] = (relay, client, msg) => {
   // Lua's `and`. Comparing against true is the one test both languages
   // answer identically for every JSON value.
   client.fast = msg.fast === true;
+  client.convoy = cleanConvoy(msg.convoy);
   relay.broadcast('mmo.move', presenceOf(client), client.id);
   // Crossing into another map -- or out of the world entirely, into a battle
   // or a menu, which is what a null cell means -- is the only part of a step
@@ -1767,6 +1773,7 @@ class Relay {
       // nobody arrives mid-stride: the first mmo.move says otherwise or it
       // stays false
       fast: false,
+      convoy: [],
       sessionId: null,
       pendingTo: null,
       partyId: null,
@@ -1835,6 +1842,7 @@ class Relay {
     client.x = hello.x === undefined ? null : hello.x;
     client.y = hello.y === undefined ? null : hello.y;
     client.facing = hello.facing || 'down';
+    client.convoy = hello.convoy || [];
     client.hello = null;
     client.nonce = null;
 

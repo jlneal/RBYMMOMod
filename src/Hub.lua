@@ -488,6 +488,7 @@ local function presenceOf(client)
     -- bike, so the client is the only authority and this is what it last
     -- reported.
     fast = client.fast == true,
+    convoy = client.convoy or {},
     profile = client.profile,
     -- Carried with presence rather than with the card: a rating moves while
     -- the player is standing there, and the card is a snapshot of their
@@ -552,6 +553,7 @@ function M:accept(peer, trusted)
     sprite = Config.DEFAULT_SPRITE,
     map = nil, x = nil, y = nil, facing = "down",
     fast = false,     -- nobody arrives mid-stride; the first move says otherwise
+    convoy = {},
     sessionId = nil,
     pendingTo = nil,
     partyId = nil,
@@ -614,6 +616,7 @@ function M:admit(client)
   client.profile = hello.profile
   client.map, client.x, client.y = hello.map, hello.x, hello.y
   client.facing = hello.facing or "down"
+  client.convoy = hello.convoy or {}
   client.hello, client.nonce = nil, nil
   client.ready = true
   -- PROTOCOL 16: playerId is the account-shaped identity. Everyone with a
@@ -2394,6 +2397,7 @@ handlers[Wire.HELLO] = function(self, client, msg)
     x = Wire.int(msg.x, 0, 4096),
     y = Wire.int(msg.y, 0, 4096),
     facing = Wire.facing(msg.facing) or "down",
+    convoy = Wire.convoy(msg.convoy),
   }
 
   if client.trusted or not self:requiresCode() then
@@ -2452,6 +2456,7 @@ handlers[Wire.MOVE] = function(self, client, msg)
   -- false to JS's Boolean().  Comparing against true is the one test both
   -- languages answer identically for every JSON value.
   client.fast = msg.fast == true
+  client.convoy = Wire.convoy(msg.convoy)
   self:broadcast(Wire.MOVE, presenceOf(client), client.id)
 end
 
