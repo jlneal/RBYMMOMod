@@ -60,6 +60,7 @@
 
 local need, mod = ...
 local Config = need("Config")
+local VoxelCoop = need("VoxelCoop")
 local Wire = need("Wire")
 local CoopSim = need("CoopSim")
 local CoopField = need("CoopField")
@@ -68,7 +69,7 @@ local CoopField = need("CoopField")
 -- monsters are on the field.
 local Mediated = need("MediatedBattle")
 
-local M = {}
+local M = { isBattleScreen = true }
 M.__index = M
 
 -- ------- the engine, loaded once and never at file scope
@@ -379,6 +380,7 @@ function M.new(game, opts)
   local self = setmetatable({
     game = game,
     isOpaque = true,
+    isBattleScreen = true,
     mine = opts.mine or 1,
     host = opts.host and true or false,
     -- Which player is simulating. Held so a disconnect can tell "the host
@@ -390,6 +392,9 @@ function M.new(game, opts)
     trainer = opts.trainer,
     trainerClass = opts.trainerClass,
     trainerPartyIndex = opts.trainerPartyIndex,
+    -- Renderer-facing aliases retained for BattleState's music probe.
+    oppClass = opts.oppClass or opts.trainerClass,
+    partyIndex = opts.partyIndex or opts.trainerPartyIndex,
     campaignOccurrence = opts.campaignOccurrence,
     campaignDefinition = opts.campaignDefinition,
     trainerPic = opts.trainerPic,
@@ -630,7 +635,9 @@ function M.musicKind(self)
   local kind = self.trainer and "trainer" or "link"
   local eng = engine
   if eng and eng.BattleState and self.trainer then
-    local probe = setmetatable({ kind = "trainer", trainer = self.trainer },
+    local probe = setmetatable({ kind = "trainer", trainer = self.trainer,
+      oppClass = self.oppClass or (self.trainer and self.trainer.id),
+      partyIndex = self.partyIndex or 1 },
       { __index = eng.BattleState })
     local ok, decided = pcall(probe.computeMusicKind, probe)
     if ok and type(decided) == "string" then kind = decided end
@@ -780,6 +787,11 @@ function M:queueIntroSendOut()
 end
 
 function M:enter()
+  if self.entered then return end
+  self.entered = true
+  self.voxelBackdrop = VoxelCoop.begin(self.game, self)
+  self.voxelRetry = (not self.voxelBackdrop and VoxelCoop.available()) and 2 or nil
+  if self.voxelBackdrop then self.letterboxWhite = false end
   -- The trainer theme, through the engine's own picker so a gym leader still
   -- gets a gym leader's music. `kind` is the battle's, not this screen's: a
   -- co-op fight against a trainer is a trainer battle to everything except the
@@ -2529,7 +2541,8 @@ function M:playEvents(events)
       -- the order the turn produced it rather than all at once at the end.
       self.messages[#self.messages + 1] =
         { anim = event.anim, from = event.from, to = event.to,
-          attackerIsPlayer = event.attackerIsPlayer, amount = event.amount }
+          attackerIsPlayer = event.attackerIsPlayer, amount = event.amount,
+          shakes = event.shakes, ball = event.ball }
     elseif event.kind == "damage" then
       -- The replayers are told the resulting HP rather than the amount, so a
       -- dropped or reordered event cannot leave a bar drifting away from the
@@ -2981,6 +2994,7 @@ function M:finish()
   self.finished = true
   self:clearIntroFlags()
   self:snapDisplay()
+  if self.voxelBackdrop then VoxelCoop.finish() end
   self.game.stack:pop()
 end
 
@@ -3755,6 +3769,16 @@ end
 --
 -- Returns `x, y, scale`, or nil for a slot that is not on the center stage.
 function M:picOriginFor(index, sprite)
+  local shot = self.voxelShot
+  local mark = shot and shot.coopMarks and shot.coopMarks[index]
+  if mark and sprite then
+    local span = (index == 1 or index == 2) and shot.playerSpan or shot.enemySpan
+    local ok, sw, sh = pcall(sprite.getDimensions, sprite)
+    local scale = tonumber(span) and tonumber(sw) and sw > 0 and span / sw or PIC_SCALE
+    if ok and sw and sh then
+      return mark[1] - sw * scale / 2, mark[2] - sh * scale, scale
+    end
+  end
   if not self:onStage(index) then return nil end
   local ally = not self:foeSide(index)
   local anchor = ally and STAGE_ALLY or STAGE_FOE
@@ -3909,6 +3933,7 @@ local function drawSideStrip(self, seats, left, focused)
 end
 
 function M:drawField()
+  local voxelActors = self.voxelShot and self.voxelShot.coopActors
   local hideFoes = self:showingTrainer()
   local introHide = self.introHide
 
@@ -3921,7 +3946,7 @@ function M:drawField()
       or (battler and battler.sprite)
     local x, y, scale = self:picOriginFor(index, sprite)
     local hideIntro = introHide and introHide[index]
-    if sprite and x and not (hideFoes and theirs)
+    if not voxelActors and sprite and x and not (hideFoes and theirs)
        and not (theirs and self.foePicHidden)
        and not hideIntro then
       if sinking then
@@ -3955,7 +3980,7 @@ function M:drawField()
       end
     end
   end
-  if self:showingTrainer() and self.trainerPic then
+  if not voxelActors and self:showingTrainer() and self.trainerPic then
     love.graphics.setColor(1, 1, 1, 1)
     local ok = pcall(love.graphics.draw, self.trainerPic, 100, 0)
     if not ok then self.trainerPic = nil end
@@ -3986,6 +4011,35 @@ function M:drawField()
     end
   end
   self:drawIntroBalls()
+end
+
+-- Renderer-neutral actor cards for an optional voxel battlefield. Simulation,
+-- menus, and effects remain owned by this screen; the renderer receives only
+-- the four visible canvases and their sides.
+function M:voxelActors()
+  local cards = {}
+  local hideFoes = self:showingTrainer()
+  local introHide = self.introHide
+  for index = 1, 4 do
+    local slot = self.sim and self.sim:slot(index)
+    local battler = self:shownBattlerAt(index)
+    local sinking = self:sinkingAt(index)
+    local shown = (sinking and sinking.battler) or battler
+    local sprite = shown and shown.sprite
+    if sprite and (sinking or not hidden(slot, shown))
+       and not (hideFoes and self:foeSide(index))
+       and not (introHide and introHide[index]) then
+      local ay
+      if sinking then
+        local ok, _, sh = pcall(sprite.getDimensions, sprite)
+        if ok and sh then ay = sh - (FAINT_FRAMES - sinking.frames) * FAINT_STEP end
+      end
+      cards[#cards + 1] = { index = index, side = slot and slot.side,
+        canvas = sprite, ay = ay,
+        noMirror = slot and slot.side == "a" or false }
+    end
+  end
+  return { cards = cards, coopActors = true }
 end
 
 -- Party ball chrome under the opening appear line (both humans' parties).
@@ -4035,6 +4089,11 @@ local CLASSIC_PLAYER = { x = STAGE_ALLY.x, y = 40 }
 local CLASSIC_ENEMY = { x = STAGE_FOE.x, y = STAGE_FOE.y }
 
 function M:startAnim(row)
+  local options = self.game and self.game.save and self.game.save.options
+  if options and options.animations == false then
+    self.anim = nil
+    return false
+  end
   self.anim = row
   -- Ball chain: HIDEPIC / SHOWPIC gate foe stage pics (engine enemyHidden).
   if row.anim == "HIDEPIC_ANIM" then
@@ -4066,15 +4125,60 @@ function M:startAnim(row)
   else
     isPlayer = true
   end
-  local ball = self.medBall
+  local ball = row.ball or self.medBall
   local opts = {
-    shakes = row.amount,
+    shakes = row.shakes or row.amount,
     ball = ball,
     ballFlicker = ball == "MASTER_BALL" or ball == "ULTRA_BALL" or nil,
   }
   local ok = pcall(self.animPlayer.start, self.animPlayer, row.anim, isPlayer, opts)
   if not ok then self.anim = nil end
   return ok
+end
+
+local CLASSIC_PLAYER_CENTER = { x = CLASSIC_PLAYER.x + 28,
+                                y = CLASSIC_PLAYER.y + 28 }
+local CLASSIC_ENEMY_CENTER = { x = CLASSIC_ENEMY.x + 28,
+                               y = CLASSIC_ENEMY.y + 28 }
+
+function M:picCenterFor(index)
+  local battler = self:shownBattlerAt(index)
+  local sprite = battler and battler.sprite
+  local x, y, scale = self:picOriginFor(index, sprite)
+  if not x then return nil end
+  local w, h = 56, 56
+  if sprite and sprite.getDimensions then
+    local ok, sw, sh = pcall(sprite.getDimensions, sprite)
+    if ok and sw and sh then w, h = sw, sh end
+  end
+  scale = scale or 1
+  return x + w * scale / 2, y + h * scale / 2
+end
+
+function M:animSpriteOffset(row, sx, sy)
+  local fromSlot = row and self.sim and self.sim:slot(row.from)
+  local toSlot = row and self.sim and self.sim:slot(row.to)
+  local fx, fy
+  if row then fx, fy = self:picCenterFor(row.from) end
+  if not (fromSlot and fx) then return 0, 0 end
+  local classicFrom = self:foeSide(row.from)
+    and CLASSIC_ENEMY_CENTER or CLASSIC_PLAYER_CENTER
+  local rigidX, rigidY = fx - classicFrom.x, fy - classicFrom.y
+  if not (toSlot and self:foeSide(row.to) ~= self:foeSide(row.from)) then
+    return rigidX, rigidY
+  end
+  local tx, ty = self:picCenterFor(row.to)
+  if not tx then return rigidX, rigidY end
+  local classicTo = self:foeSide(row.to)
+    and CLASSIC_ENEMY_CENTER or CLASSIC_PLAYER_CENTER
+  local vx, vy = classicTo.x - classicFrom.x, classicTo.y - classicFrom.y
+  local denom = vx * vx + vy * vy
+  if denom == 0 then return rigidX, rigidY end
+  local t = ((sx - classicFrom.x) * vx + (sy - classicFrom.y) * vy) / denom
+  t = math.max(0, math.min(1, t))
+  local toDx, toDy = tx - classicTo.x, ty - classicTo.y
+  return rigidX + (toDx - rigidX) * t,
+         rigidY + (toDy - rigidY) * t
 end
 
 -- How far to shift this animation so it lands on the slot that acted.
@@ -4109,11 +4213,27 @@ end
 function M:drawAnim()
   local row = self.anim
   if not (row and self.animPlayer and self.animPlayer.draw) then return end
-  local dx, dy = self:animOffset(row)
-  love.graphics.push()
-  love.graphics.translate(dx, dy)
+  local step = self.animPlayer.steps
+    and self.animPlayer.steps[self.animPlayer.stepIndex]
+  local sprites = step and step.sprites
+  if not sprites then
+    local dx, dy = self:animOffset(row)
+    love.graphics.push()
+    love.graphics.translate(dx, dy)
+    pcall(self.animPlayer.draw, self.animPlayer)
+    love.graphics.pop()
+    return
+  end
+  local saved = {}
+  for i, sprite in ipairs(sprites) do
+    saved[i] = { sprite.x, sprite.y }
+    local dx, dy = self:animSpriteOffset(row, sprite.x - 4, sprite.y - 12)
+    sprite.x, sprite.y = sprite.x + dx, sprite.y + dy
+  end
   pcall(self.animPlayer.draw, self.animPlayer)
-  love.graphics.pop()
+  for i, sprite in ipairs(sprites) do
+    sprite.x, sprite.y = saved[i][1], saved[i][2]
+  end
 end
 
 -- ------- exp
@@ -4689,6 +4809,7 @@ end
 function M:applyTurn(msg)
   local seq = Wire.int(msg.seq, 1, 100000)
   local expected = (self.seq or 0) + 1
+  self.turnCount = math.max(self.turnCount or 0, seq or expected)
   -- The turn has come back, so every answer this client was watching for was
   -- given -- the replayer's half of the reset `tryResolve` does on the host.
   self.acted = nil
@@ -5063,6 +5184,9 @@ function M:drainNet()
         -- number nobody holds any more.
         self:snapDisplay()
         self.seq = Wire.int(msg.seq, 0, 100000) or self.seq
+        if (self.seq or 0) > 0 then
+          self.turnCount = math.max(self.turnCount or 0, self.seq)
+        end
         self.resyncs = (self.resyncs or 0) + 1
         mod.log:warn("a co-op battle re-synchronised with the host after a "
           .. "lost message; the field on screen is correct again")
@@ -6190,7 +6314,17 @@ function M:drawSafe()
   local eng = engine
   if not eng then return end
   love.graphics.setColor(1, 1, 1, 1)
-  love.graphics.rectangle("fill", 0, 0, 160, 144)
+  if not self.voxelBackdrop and self.voxelRetry then
+    self.voxelRetry = self.voxelRetry - 1
+    if self.voxelRetry <= 0 then
+      self.voxelRetry = nil
+      self.voxelBackdrop = VoxelCoop.begin(self.game, self)
+      if self.voxelBackdrop then self.letterboxWhite = false end
+    end
+  end
+  local voxelShot = self.voxelBackdrop and VoxelCoop.drawBackdrop(self.game, self)
+  self.voxelShot = voxelShot
+  if not voxelShot then love.graphics.rectangle("fill", 0, 0, 160, 144) end
   self:drawField()
   -- Trainer is painted inside drawField (under the panels) while the opening
   -- lines run; drawing it here again put the sprite over ally readouts.

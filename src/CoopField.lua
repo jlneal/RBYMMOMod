@@ -104,10 +104,10 @@ function M.build(deps)
     table.insert(self.queue, self.nextInsert, { fn = fn })
   end
 
-  -- Animations are named in the events so a client that wants to draw one
-  -- can, and dropped by the ones that do not. The mod's own battle screen
-  -- does not play them: the engine's AnimPlayer is written against two pic
-  -- positions, and a wrong animation is worse than none.
+  -- Animations are named in the events so every client can apply its own
+  -- OPTIONS toggle while replaying the same turn.  In particular this must
+  -- stay enabled on the host even when *its* animations are off: suppressing
+  -- the row here would also suppress it for three guests whose option is on.
   function Field:animNext(name, isPlayer, shakes, ball)
     self.nextInsert = (self.nextInsert or 0) + 1
     table.insert(self.queue, self.nextInsert,
@@ -137,7 +137,7 @@ function M.build(deps)
 
   function Field:ui() end
   function Field:uiNext() end
-  function Field:animationsOn() return false end
+  function Field:animationsOn() return true end
 
   -- ------- the four-slot overrides
 
@@ -283,6 +283,7 @@ function M.drain(field)
         -- Kept so a screen that plays the flash can face it the way the
         -- engine queued it (player vs enemy transform), not only by slot.
         attackerIsPlayer = row.attackerIsPlayer,
+        shakes = row.shakes, ball = row.ball,
       }
     elseif row.drain then
       -- The bar's next resting place, named by slot so a client can animate

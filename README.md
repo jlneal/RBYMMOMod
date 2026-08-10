@@ -353,6 +353,33 @@ button held through the messages can't answer it), a no costs you nothing but
 the asking, and a yes ends the battle for all four — as the runners' loss and
 the opponents' win, so fleeing at match point buys nothing.
 
+**Wild co-op is an opt-in host policy.** It defaults to **OFF**, so wild
+battles remain ordinary local battles until the host enables it. When enabled,
+one party member may join the other's encounter manually with **JOIN**, or
+automatically when the host permits proximity joining and that client chooses
+a non-zero **PROX DIST**. Late joins enter between turns without rebuilding
+the field or losing volatile battle state. Either player may flee and rejoin;
+if the authoritative player leaves, authority transfers to the participant who
+remains, and the encounter closes only when everyone leaves or it resolves.
+
+The separate host **2ND WILD** percentage controls only whether a joined
+encounter gains a second target. `0%` still permits two players against one
+wild. Each target can be caught independently, so both players may catch in a
+double encounter. Competing throws serialize: a valid failed throw spends its
+ball, while a throw made obsolete by the other player's successful catch is
+cancelled and refunded. Captures use the normal nickname prompt. With Wilds of
+Kanto installed, the optional integration preserves the visible encounter's
+identity and releases its field lock when the shared battle ends.
+
+When Battle Art Voxel Fork's 3D battle mode is available, the co-op screen
+borrows its staged terrain and camera while retaining ownership of simulation,
+menus, text, animations, and all four battlers. The two allied and two opposing
+cards are placed as symmetric pairs; move effects interpolate between their
+projected actor marks so attacks land on the selected slot. Four native HUD
+elements are captured at the same compact scale as the renderer's solo battle
+HUD. If the optional renderer or any presentation seam is absent, the same
+battle safely falls back to the flat four-slot screen.
+
 **Exp is priced on each player's own machine.** The host resolves the knockout
 but holds nobody's party except its own, so what crosses the wire is a
 *description* of the kill — what fell, at what level, and how many shared it —
