@@ -113,7 +113,7 @@ end
 -- the sentence on.  The code itself never reaches self.error and never
 -- reaches mod.log: an error string is read out on screen, and a log line
 -- outlives the game that wrote it.
-function M:start(port, maxPlayers, joinCode)
+function M:start(port, maxPlayers, joinCode, opts)
   if self.running then return false, "already hosting" end
 
   if type(joinCode) ~= "string" or joinCode == "" then
@@ -151,9 +151,12 @@ function M:start(port, maxPlayers, joinCode)
   -- the only traffic on that path, so one of these lines is the difference
   -- between "the trade half-happened" and knowing why. Hub only calls this
   -- once per connection, so a peer sending nothing but junk cannot flood it.
+  opts = opts or {}
   self.hub = Hub.new({
     maxPlayers = maxPlayers,
     joinCode = code,
+    coopExpEnabled = opts.coopExpEnabled,
+    coopMoneyEnabled = opts.coopMoneyEnabled,
     onDrop = function(reason, clientId)
       mod.log:warn("refused a relayed message from player %s (%s); "
         .. "if a trade or battle stalled, this is why -- ask them to "

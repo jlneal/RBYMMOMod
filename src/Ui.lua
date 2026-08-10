@@ -1496,8 +1496,14 @@ function M:install()
     local client = ctx.client
     local code = client:hostJoinCode()
     if not code then code = client:setHostJoinCode(client:newJoinCode()) end
+    local coopExp = client:hostCoopExpEnabled()
+    local coopMoney = client:hostCoopMoneyEnabled()
     local items = {
       { label = "PLAYERS", right = tostring(client:maxPlayers()), key = "players" },
+      { label = "CO-OP EXP", right = coopExp and "ON" or "OFF",
+        key = "coopexp" },
+      { label = "CO-OP MONEY", right = coopMoney and "ON" or "OFF",
+        key = "coopmoney" },
       -- "SET ONE" only when the pool could not mint one; the row still
       -- leads to the screen that fixes it, so the way out never moves
       { label = "JOIN CODE", right = code and codeText(code) or "SET ONE",
@@ -1509,6 +1515,12 @@ function M:install()
         menu:close()
         if item.key == "players" then
           mod.ui.push(game, SCREEN.HOSTSIZE)
+        elseif item.key == "coopexp" then
+          client:setHostCoopExpEnabled(not client:hostCoopExpEnabled())
+          mod.ui.push(game, SCREEN.HOSTSET)
+        elseif item.key == "coopmoney" then
+          client:setHostCoopMoneyEnabled(not client:hostCoopMoneyEnabled())
+          mod.ui.push(game, SCREEN.HOSTSET)
         elseif item.key == "code" then
           mod.ui.push(game, SCREEN.HOSTCODE)
         elseif not code then

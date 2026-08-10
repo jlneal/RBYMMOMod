@@ -802,7 +802,9 @@ function M.coopField(raw)
   end
 
   return { slots = slots, host = M.id(raw.host),
-           trainer = M.id(raw.trainer) }
+           trainer = M.id(raw.trainer),
+           rewardExp = raw.rewardExp ~= false,
+           rewardMoney = raw.rewardMoney ~= false }
 end
 
 function M.battleKey(value)

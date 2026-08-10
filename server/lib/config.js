@@ -54,6 +54,10 @@ const DEFAULTS = {
   version: SCHEMA_VERSION,
   listen: { host: '0.0.0.0', port: 7788 },
   maxPlayers: 4,
+  gameplay: {
+    coopExpEnabled: true,
+    coopMoneyEnabled: true,
+  },
   // The one line the hub hands every player on arrival -- it rides on the
   // welcome and lands in their chat log as a HUB line. Empty means the hub
   // says nothing, which is the right default: a greeting the host never wrote
@@ -206,6 +210,8 @@ const ENV_MAP = {
   RBY_MMO_HOST: 'listen.host',
   RBY_MMO_PORT: 'listen.port',
   RBY_MMO_MAX: 'maxPlayers',
+  RBY_MMO_COOP_EXP: 'gameplay.coopExpEnabled',
+  RBY_MMO_COOP_MONEY: 'gameplay.coopMoneyEnabled',
   RBY_MMO_AUTH_REQUIRED: 'auth.required',
   RBY_MMO_PER_IP: 'limits.perIpConnections',
   RBY_MMO_CONNECT_BURST: 'limits.connectBurst',
@@ -240,6 +246,8 @@ const FLAG_MAP = {
   port: 'listen.port',
   max: 'maxPlayers',
   maxPlayers: 'maxPlayers',
+  coopExp: 'gameplay.coopExpEnabled',
+  coopMoney: 'gameplay.coopMoneyEnabled',
   auth: 'auth.required',
   perIp: 'limits.perIpConnections',
   connectBurst: 'limits.connectBurst',
@@ -569,6 +577,8 @@ function validate(config) {
   for (const dotted of Object.keys(BOUNDS)) clampNumber(working, dotted, warnings);
 
   validateBoolean(working, 'auth.required', warnings);
+  validateBoolean(working, 'gameplay.coopExpEnabled', warnings);
+  validateBoolean(working, 'gameplay.coopMoneyEnabled', warnings);
   validateBoolean(working, 'network.upnp.enabled', warnings);
   validateMotd(working);
   validateCredentials(working, warnings);

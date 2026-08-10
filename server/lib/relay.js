@@ -110,8 +110,9 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // joins the grass fight, or both clients grant (or neither) because ownership
 // was never named. The rule every bump follows is unchanged: bump whenever a
 // client can send something a hub silently ignores. Kept in step with
-// Config.PROTOCOL on the mod side.
-const PROTOCOL = 18;
+// Config.PROTOCOL on the mod side. 19 adds host-owned co-op gameplay policy;
+// a protocol-18 client would ignore disabled rewards and pay them anyway.
+const PROTOCOL = 19;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right
@@ -1207,6 +1208,8 @@ class Relay {
     // thing that reads a host's file. This only refuses to run on a value
     // that is not a number at all.
     this.maxPlayers = Number.isFinite(cap) ? cap : DEFAULT_PLAYERS;
+    this.coopExpEnabled = opts.coopExpEnabled !== false;
+    this.coopMoneyEnabled = opts.coopMoneyEnabled !== false;
     this.chatIntervalMs = Number.isFinite(Number(opts.chatIntervalMs))
       ? Number(opts.chatIntervalMs) : 500;
     this.protocol = Number.isFinite(Number(opts.protocol))
@@ -1747,6 +1750,8 @@ class Relay {
       id: client.id,
       players,
       points: client.points,
+      coopExpEnabled: this.coopExpEnabled,
+      coopMoneyEnabled: this.coopMoneyEnabled,
       ranked: client.ranked,
       motd: motd || undefined,
       admin: client.admin || undefined,

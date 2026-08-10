@@ -554,6 +554,8 @@ function start(options = {}) {
 
   const relay = new Relay({
     maxPlayers: config.maxPlayers,
+    coopExpEnabled: config.gameplay && config.gameplay.coopExpEnabled,
+    coopMoneyEnabled: config.gameplay && config.gameplay.coopMoneyEnabled,
     chatIntervalMs: config.limits && config.limits.chatIntervalMs,
     board,
     onRankChange: () => noteRankChange(),

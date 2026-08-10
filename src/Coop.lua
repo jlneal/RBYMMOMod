@@ -56,13 +56,18 @@ local CoopBattle = need("CoopBattle")
 local M = {}
 M.__index = M
 
-function M.new(transport, ui, party, roster, chat)
+function M.new(transport, ui, party, roster, chat, coopExpEnabled,
+               coopMoneyEnabled)
   return setmetatable({
     transport = transport,
     ui = ui,
     party = party,
     roster = roster,
     chat = chat,
+    coopExpEnabled = type(coopExpEnabled) == "function" and coopExpEnabled
+      or function() return true end,
+    coopMoneyEnabled = type(coopMoneyEnabled) == "function" and coopMoneyEnabled
+      or function() return true end,
     -- our own standing offer: { battle, label, map, start }
     waiting = nil,
     -- the partner's, as it arrived: { from, name, battle, label, map, clock }
@@ -96,6 +101,16 @@ function M.new(transport, ui, party, roster, chat)
     running = false,
     clock = 0,
   }, M)
+end
+
+function M:coopExpAllowed()
+  return type(self.coopExpEnabled) ~= "function"
+    or self.coopExpEnabled() ~= false
+end
+
+function M:coopMoneyAllowed()
+  return type(self.coopMoneyEnabled) ~= "function"
+    or self.coopMoneyEnabled() ~= false
 end
 
 -- ------- naming a fight
@@ -196,7 +211,7 @@ end
 -- `blackout` is decided by the caller and handed in, because deciding it here
 -- would mean asking whether the party is wiped *after* something may already
 -- have healed it. Answers whether the engine took the ritual on.
-function M:consume(result, blackout)
+function M:consume(result, blackout, rewardMoney)
   local encounter = self.encounter
   self.encounter = nil
   if not encounter then return false end
@@ -208,7 +223,7 @@ function M:consume(result, blackout)
   -- the strongest monster the trainer had -- a 2-on-2 has two last opponents,
   -- and paying for the better of them is the reading that cannot be gamed by
   -- ordering the party.
-  if result == "win" and engine.trainer then
+  if result == "win" and engine.trainer and rewardMoney ~= false then
     local best = 0
     for _, mon in ipairs(engine.enemyParty or {}) do
       best = math.max(best, tonumber(mon.level) or 0)
@@ -1770,7 +1785,16 @@ function M:buildField(game, battle, humans)
   -- that joined by answering an invitation never walked into this trainer and
   -- so has no other way to know.
   local trainer = plan.engine and plan.engine.trainer
-  return { slots = slots, host = plan.hostId, trainer = trainer and trainer.id }
+  return {
+    slots = slots,
+    host = plan.hostId,
+    trainer = trainer and trainer.id,
+    -- Human-vs-human battles never mint ordinary trainer rewards. Against an
+    -- NPC, the host's session policy is copied into the authoritative field
+    -- so every client applies the same answer.
+    rewardExp = (not versusPlayers) and self:coopExpAllowed() or false,
+    rewardMoney = (not versusPlayers) and self:coopMoneyAllowed() or false,
+  }
 end
 
 -- The NPC side, taken from the battle the engine already built.
@@ -1975,6 +1999,8 @@ function M:startBattle(game, field)
     -- Whether a win here is worth points, so the screen can say so once
     -- rather than leave a player wondering why their rating did not move.
     ranksPoints = M.ranksPoints(battle.plan),
+    rewardExp = field.rewardExp,
+    rewardMoney = field.rewardMoney,
     net = net,
     onDone = function(outcome, toLearn)
       self:onBattleOver(outcome, game, state, toLearn)
@@ -2113,7 +2139,8 @@ function M:onBattleOver(result, game, state, toLearn)
   -- exit, which is what reaches this function. The ritual's save writes land
   -- immediately; its warp waits for whatever the two lines above may have put
   -- on screen (see M:pumpBlackout).
-  local handled, engineRitual = self:consume(result, blackout)
+  local handled, engineRitual = self:consume(result, blackout,
+    state and state.rewardMoney)
   if blackout and not (handled and engineRitual) then self:blackout(game) end
 end
 

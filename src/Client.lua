@@ -78,7 +78,13 @@ friends.busy = function(game)
   return sessions:isBusy() or sessions.incoming ~= nil
     or sessions:inFight(game or ctx.game)
 end
-local coop = Coop.new(transport, ui, party, ctx.roster, ctx.chat)
+local sessionCoopExpEnabled = Config.DEFAULT_COOP_EXP_ENABLED
+local sessionCoopMoneyEnabled = Config.DEFAULT_COOP_MONEY_ENABLED
+local coop = Coop.new(transport, ui, party, ctx.roster, ctx.chat, function()
+  return sessionCoopExpEnabled
+end, function()
+  return sessionCoopMoneyEnabled
+end)
 -- Co-op can be mid-handoff with no screen yet (running/state set, stack
 -- still overworld). Sessions asks this so a 1v1 invite is refused there
 -- the same way a wild battle on the stack is.
@@ -227,6 +233,38 @@ function M.maxPlayers()
   local stored = mod.save:get("maxplayers")
   if stored ~= nil then return Config.clampPlayers(stored) end
   return Config.clampPlayers(mod.options:get("maxplayers"))
+end
+
+function M.hostCoopExpEnabled()
+  local stored = mod.save:get("coopexp")
+  if stored ~= nil then
+    return Config.rewardEnabled(stored, Config.DEFAULT_COOP_EXP_ENABLED)
+  end
+  return Config.rewardEnabled(mod.options:get("coopexp"),
+    Config.DEFAULT_COOP_EXP_ENABLED)
+end
+
+function M.setHostCoopExpEnabled(a, b)
+  local enabled = Config.rewardEnabled(arg1(a, b),
+    Config.DEFAULT_COOP_EXP_ENABLED)
+  mod.save:set("coopexp", enabled)
+  return enabled
+end
+
+function M.hostCoopMoneyEnabled()
+  local stored = mod.save:get("coopmoney")
+  if stored ~= nil then
+    return Config.rewardEnabled(stored, Config.DEFAULT_COOP_MONEY_ENABLED)
+  end
+  return Config.rewardEnabled(mod.options:get("coopmoney"),
+    Config.DEFAULT_COOP_MONEY_ENABLED)
+end
+
+function M.setHostCoopMoneyEnabled(a, b)
+  local enabled = Config.rewardEnabled(arg1(a, b),
+    Config.DEFAULT_COOP_MONEY_ENABLED)
+  mod.save:set("coopmoney", enabled)
+  return enabled
 end
 
 -- arg1 so the colon form the menus use (client:setMaxPlayers(n)) does not
@@ -1129,7 +1167,10 @@ function M.host(a, b)
   -- screen like any other refusal rather than failing silently. The host
   -- screen mints a code before START is reachable, so a player only meets
   -- that sentence when the entropy pool could not produce one.
-  local ok, err = server:start(Config.DEFAULT_PORT, limit, M.hostJoinCode())
+  local ok, err = server:start(Config.DEFAULT_PORT, limit, M.hostJoinCode(), {
+    coopExpEnabled = M.hostCoopExpEnabled(),
+    coopMoneyEnabled = M.hostCoopMoneyEnabled(),
+  })
   if not ok then
     ui:say(tostring(err or "Couldn't start hosting."))
     return false
@@ -1209,6 +1250,8 @@ function M.disconnect()
   -- player is on their way to another.
   friends:reset()
   coop:reset()
+  sessionCoopExpEnabled = Config.DEFAULT_COOP_EXP_ENABLED
+  sessionCoopMoneyEnabled = Config.DEFAULT_COOP_MONEY_ENABLED
   ctx.avatars:clear()
   ctx.roster:reset()
   ctx.chat:clear()
@@ -1495,6 +1538,8 @@ handlers[Wire.WELCOME] = function(game, msg)
   -- open, so opening it late would silently drop the very asks that were held
   -- for this player while they were away.
   friends:setHub(dialled, M.playerName(game))
+  sessionCoopExpEnabled = msg.coopExpEnabled ~= false
+  sessionCoopMoneyEnabled = msg.coopMoneyEnabled ~= false
   -- your own rating, which cannot come from the roster: it has no entry for
   -- you, by design
   myPoints = Wire.points(msg.points)

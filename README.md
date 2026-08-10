@@ -419,6 +419,8 @@ trainers are an infinite supply the anti-farming discount can't touch, so two
 friends could grind gym leaders to the top of the board without ever meeting
 anybody. A co-op trainer battle pays what a trainer battle pays — exp, badges,
 prize money — and no points, and says as much the first time you win one.
+The host may turn **CO-OP EXP** and **CO-OP MONEY** off independently before
+starting the session; player-vs-player battles never pay either reward.
 
 **A party battle is scored as a team battle.** Each of the four is rated
 against the *other pair's* combined strength — which is the match they actually

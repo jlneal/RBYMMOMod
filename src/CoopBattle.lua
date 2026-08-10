@@ -380,6 +380,8 @@ function M.new(game, opts)
     -- second copy of it living in the battle screen is a second copy to get
     -- out of step.
     ranksPoints = opts.ranksPoints and true or false,
+    rewardExp = opts.rewardExp ~= false,
+    rewardMoney = opts.rewardMoney ~= false,
     net = opts.net,
     onDone = opts.onDone,
     -- ------- the intermediator's half, all of it inert until it answers
@@ -4096,6 +4098,7 @@ end
 -- exp, raises the stats and decides whether a level was crossed. Applying a
 -- host-computed number instead would skip all three.
 function M:gainExp(event)
+  if self.rewardExp == false then return false end
   if event.slot ~= self.mine then return end
   local slot = self.sim:slot(self.mine)
   local mon = slot and slot.battler and slot.battler.mon

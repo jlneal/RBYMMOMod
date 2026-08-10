@@ -951,6 +951,8 @@ end and reported, never obeyed.
 | `listen.host` | `0.0.0.0` | — | `RBY_MMO_HOST` | address to bind. `0.0.0.0` accepts on every address this machine has |
 | `listen.port` | `7788` | 1–65535 | `RBY_MMO_PORT` | TCP port to listen on |
 | `maxPlayers` | `4` | 2–64 | `RBY_MMO_MAX` | greeted players before new ones are refused |
+| `gameplay.coopExpEnabled` | `true` | — | `RBY_MMO_COOP_EXP` | whether NPC co-op knockouts award EXP |
+| `gameplay.coopMoneyEnabled` | `true` | — | `RBY_MMO_COOP_MONEY` | whether an NPC co-op win awards trainer prize money |
 | `motd` | `""` | ≤120 chars | — | the message of the day, shown to everyone who connects. Empty means no greeting. Re-applied on `SIGHUP` |
 | `auth.required` | `true` | — | `RBY_MMO_AUTH_REQUIRED` | whether a passcode is demanded. **`false` means the hub refuses to start** — it is still settable, so a config can be scripted or a report reproduced, but `start` exits `1` and `doctor` calls it a `[fail]` |
 | `auth.credentials` | `[]` | — | — | the join codes, each optionally marked `admin` (see [Admin codes](#admin-codes)). Managed with `invite` / `revoke` |

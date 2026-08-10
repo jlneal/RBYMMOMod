@@ -110,8 +110,13 @@ M.MOD_ID = "rby_mmo"
 -- field -- either way the partner never joins the grass fight, or both clients
 -- grant (or neither does) because ownership was never named. Refusal that
 -- names both versions is the only sentence either player can act on.
--- This number lives here and in server/lib/relay.js -- bump them together.
-M.PROTOCOL = 18
+--
+-- 19 adds host-owned co-op gameplay policy to WELCOME and to the shared battle
+-- field. A protocol-18 client would ignore a host disabling rewards and pay
+-- them anyway, so this is a semantic incompatibility rather than an optional
+-- display field. This number lives here and in server/lib/relay.js -- bump them
+-- together.
+M.PROTOCOL = 19
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.
@@ -147,6 +152,14 @@ M.DEFAULT_HUB = ("127.0.0.1:%d"):format(M.DEFAULT_PORT)
 M.MIN_PLAYERS = 2
 M.MAX_PLAYERS = 64
 M.DEFAULT_PLAYERS = 4
+M.DEFAULT_COOP_EXP_ENABLED = true
+M.DEFAULT_COOP_MONEY_ENABLED = true
+
+function M.rewardEnabled(value, fallback)
+  if value == nil then return fallback ~= false end
+  return value == true or value == 1 or value == "1"
+    or value == "true" or value == "on" or value == "yes"
+end
 
 function M.clampPlayers(value)
   local n = tonumber(value)

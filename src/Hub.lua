@@ -245,6 +245,8 @@ function M.new(opts)
   opts = opts or {}
   return setmetatable({
     limit = Config.clampPlayers(opts.maxPlayers),
+    coopExpEnabled = opts.coopExpEnabled ~= false,
+    coopMoneyEnabled = opts.coopMoneyEnabled ~= false,
     -- Absent is nil, never "": a hub with no code admits anyone who says
     -- hello, which is a fixture, not a hosting mode -- see the header.
     -- Re-normalised on the way in because a code that does not survive
@@ -607,6 +609,8 @@ function M:admit(client)
   end
   send(client, Wire.WELCOME, {
     id = client.id, players = players, points = client.points,
+    coopExpEnabled = self.coopExpEnabled,
+    coopMoneyEnabled = self.coopMoneyEnabled,
     ranked = true,
   })
   self:broadcast(Wire.JOIN, { player = presenceOf(client) }, client.id)

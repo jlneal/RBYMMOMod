@@ -515,6 +515,8 @@ function testValueFor(dotted) {
   switch (dotted) {
     case 'listen.host': return { raw: '127.0.0.2', expected: '127.0.0.2' };
     case 'auth.required': return { raw: 'false', expected: false };
+    case 'gameplay.coopExpEnabled': return { raw: 'false', expected: false };
+    case 'gameplay.coopMoneyEnabled': return { raw: 'false', expected: false };
     case 'network.upnp.enabled': return { raw: 'true', expected: true };
     case 'log.level': return { raw: 'debug', expected: 'debug' };
     case 'bans': return { raw: '203.0.113.9', expected: [limits.normalizeIp('203.0.113.9')] };
