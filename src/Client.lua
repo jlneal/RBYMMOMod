@@ -1950,7 +1950,13 @@ local function tick(game, dt)
     if M.spriteChoice() ~= spriteAcked then M.pushSprite() end
   end
 
-  ctx.avatars:sync(ctx.roster, World.current())
+  -- WorldAPI intentionally finds the overworld underneath battle screens,
+  -- but StateStack updates only its top. Starting remote NPC steps below a
+  -- battle queues motion that visibly replays after combat. Hide replicated
+  -- actors for the whole battle interval and rebuild once from the newest
+  -- roster presence when the stack is clear.
+  local projecting = ctx.avatars:canProject(game, coop.state)
+  ctx.avatars:sync(ctx.roster, projecting and World.current() or nil)
 end
 
 -- ------- install
