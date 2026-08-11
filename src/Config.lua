@@ -129,7 +129,12 @@ M.MOD_ID = "rby_mmo"
 -- requests, leaving the campaign replica unable to commit. The combined
 -- integration therefore gets its own generation; the standalone flexible-
 -- Wild branch remains protocol 20.
-M.PROTOCOL = 21
+--
+-- 22 binds an authoritative singular catch to its admitted Campaign actor as
+-- `campaignCatcher`. A protocol-21 client strips that beneficiary, so the
+-- shared world can observe that Articuno was consumed but cannot safely award
+-- it to the player whose ball succeeded.
+M.PROTOCOL = 22
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.

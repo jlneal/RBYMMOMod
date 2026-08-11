@@ -7100,6 +7100,20 @@ wAnn.transport.send = function(transport, msgType, payload)
   return origSend(transport, msgType, payload)
 end
 wBob.coop.running = true
+local staticDefinition = "0123456789abcdef"
+wAnn.coop.battleContext = function()
+  return { occurrence = "rby:static:ARTICUNO", definition = staticDefinition }
+end
+eq(wildEngage(wAnn, "FIXMON_A", 5), true,
+  "a content-owned static wild reaches the battle context provider")
+eq(wAnn.coop.waiting.campaign.occurrence, "rby:static:ARTICUNO",
+  "the exact occurrence survives into the waiting handoff")
+eq(wAnn.coop.waiting.wildMate, nil,
+  "a canonical unique encounter cannot roll a duplicate second Wild")
+resetCoopWild(wAnn)
+wAnn.coop.battleContext = nil
+coopWaits = {}
+
 eq(wildEngage(wAnn), true, "on-map party diverts grass into Party vs Wild")
 wAnn.transport.send = origSend
 eq(#coopWaits, 1, "beginWildCoop posts exactly one COOP_WAIT")

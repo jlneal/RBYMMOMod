@@ -121,7 +121,10 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // 21 adds Campaign State frontier and sequence authority. A protocol-20 hub
 // would silently discard those requests, so the combined integration must not
 // claim wire compatibility with the standalone flexible-Wild branch.
-const PROTOCOL = 21;
+// 22 adds campaignCatcher, the stable admitted actor corresponding to the
+// authoritative singular catcher. A protocol-21 client silently strips it and
+// cannot attach the personal capture consequence safely.
+const PROTOCOL = 22;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right
@@ -3255,6 +3258,11 @@ class Relay {
       if (record.campaignOccurrence && record.campaignDefinition) {
         payload.campaignOccurrence = record.campaignOccurrence;
         payload.campaignDefinition = record.campaignDefinition;
+        if (payload.reason === 'catch' && payload.catcher
+            && present.has(payload.catcher) && campaign.has(payload.catcher)
+            && payload.acted.includes(payload.catcher)) {
+          payload.campaignCatcher = campaign.get(payload.catcher);
+        }
       }
     }
     this.broadcastBattle(record, 'mmo.battle_outcome', payload);

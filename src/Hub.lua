@@ -2082,6 +2082,18 @@ function M:settleMediated(record, outcome)
     if record.campaignOccurrence and record.campaignDefinition then
       payload.campaignOccurrence = record.campaignOccurrence
       payload.campaignDefinition = record.campaignDefinition
+      -- Transport catcher ids are session-local. Translate the singular
+      -- successful thrower only after the complete admitted roster has been
+      -- mapped, and only when that actor was present and acted in the final
+      -- authoritative receipt.
+      if payload.reason == "catch" and payload.catcher
+        and present[payload.catcher] and campaign[payload.catcher] then
+        local acted = {}
+        for _, id in ipairs(payload.acted) do acted[id] = true end
+        if acted[payload.catcher] then
+          payload.campaignCatcher = campaign[payload.catcher]
+        end
+      end
     end
   end
   self:broadcastBattle(record, Wire.BATTLE_OUTCOME, payload)

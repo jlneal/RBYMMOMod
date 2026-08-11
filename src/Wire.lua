@@ -1718,7 +1718,7 @@ function M.battleOutcome(raw)
     or raw.campaignParticipants ~= nil or raw.campaignActed ~= nil
     or raw.campaignGeneration ~= nil or raw.campaignRevision ~= nil
     or raw.campaignHosts ~= nil or raw.campaignOccurrence ~= nil
-    or raw.campaignDefinition ~= nil
+    or raw.campaignDefinition ~= nil or raw.campaignCatcher ~= nil
   if hasCampaign then
     local world = CampaignIdentity.identifier(raw.campaignWorld, 64)
     local host = CampaignIdentity.identifier(raw.campaignHost, 64)
@@ -1754,6 +1754,14 @@ function M.battleOutcome(raw)
         and raw.campaignDefinition or nil
       if not (occurrence and definition) then return nil end
       out.campaignOccurrence, out.campaignDefinition = occurrence, definition
+    end
+    if raw.campaignCatcher ~= nil then
+      local catcher = CampaignIdentity.identifier(raw.campaignCatcher, 64)
+      local actedSet = {}
+      for _, id in ipairs(acted) do actedSet[id] = true end
+      if not catcher or out.reason ~= "catch" or not out.campaignOccurrence
+        or not present[catcher] or not actedSet[catcher] then return nil end
+      out.campaignCatcher = catcher
     end
   end
   -- Optional catch sheet: battleMon-shaped snapshot for clients that did not

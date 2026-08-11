@@ -649,7 +649,7 @@ function M:wildIntroName()
       return Wire.name(name) or name
     end
   end
-  if self.wildParty and self.wildParty[1] then
+  if type(self.wildParty) == "table" and self.wildParty[1] then
     local sheet = self.wildParty[1]
     local name = sheet.species or sheet.speciesId
     if type(name) == "string" and name ~= "" then
@@ -5728,6 +5728,7 @@ function M:onBattleOutcome(msg)
     campaignHosts = ids(msg.campaignHosts),
     campaignOccurrence = msg.campaignOccurrence,
     campaignDefinition = msg.campaignDefinition,
+    campaignCatcher = msg.campaignCatcher,
   }
 
   local mine = self:mySlot()

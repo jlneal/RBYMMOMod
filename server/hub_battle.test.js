@@ -590,6 +590,14 @@ function testCoopWildCatchCatcher() {
   relay.openCoopBattle('cw-catch', [a.id, b.id],
     { mode: 'coop_wild', hostId: a.id });
   const record = relay.battles.get('cw-catch');
+  relay.clients.get(a.id).worldState = {
+    world: 'shared-world', compatibility: 'same', player: 'campaign-ann',
+  };
+  relay.clients.get(b.id).worldState = {
+    world: 'shared-world', compatibility: 'same', player: 'campaign-bob',
+  };
+  record.campaignOccurrence = 'rby:static:ARTICUNO';
+  record.campaignDefinition = '0123456789abcdef';
   a.peer.outbox = [];
   b.peer.outbox = [];
 
@@ -648,6 +656,8 @@ function testCoopWildCatchCatcher() {
   ok(outcome && outcome.reason === 'catch',
     'catch success reasons the outcome as catch');
   ok(outcome.catcher === a.id, 'catcher names the thrower');
+  ok(outcome.campaignCatcher === 'campaign-ann',
+    'authoritative thrower maps to one admitted Campaign actor');
   ok(take(a, 'mmo.battle_outcome') || take(b, 'mmo.battle_outcome'),
     'both players hear the outcome');
   ok(!relay.battles.has('cw-catch'),

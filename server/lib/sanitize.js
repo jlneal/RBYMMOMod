@@ -1194,7 +1194,8 @@ function cleanBattleOutcome(raw) {
     || raw.campaignHost !== undefined || raw.campaignParticipants !== undefined
     || raw.campaignActed !== undefined || raw.campaignGeneration !== undefined
     || raw.campaignRevision !== undefined || raw.campaignHosts !== undefined
-    || raw.campaignOccurrence !== undefined || raw.campaignDefinition !== undefined;
+    || raw.campaignOccurrence !== undefined || raw.campaignDefinition !== undefined
+    || raw.campaignCatcher !== undefined;
   if (hasCampaign) {
     const world = cleanProgressionId(raw.campaignWorld, 64);
     const host = cleanProgressionId(raw.campaignHost, 64);
@@ -1244,6 +1245,12 @@ function cleanBattleOutcome(raw) {
       }
       result.campaignOccurrence = occurrence;
       result.campaignDefinition = definition;
+    }
+    if (raw.campaignCatcher !== undefined && raw.campaignCatcher !== null) {
+      const catcher = cleanProgressionId(raw.campaignCatcher, 64);
+      if (!catcher || result.reason !== 'catch' || !result.campaignOccurrence
+          || !participants.includes(catcher) || !acted.includes(catcher)) return null;
+      result.campaignCatcher = catcher;
     }
   }
   if (raw.caught !== undefined && raw.caught !== null) {

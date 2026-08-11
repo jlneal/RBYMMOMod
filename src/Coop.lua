@@ -694,10 +694,16 @@ function M:onWildEncounter(game, state, mapId)
   local species = mon.species
   local label = Wire.label(tostring(species or ""):gsub("_", " "))
   local key = M.battleKey(mapId, species, mon.level)
+  local campaign
+  if type(self.battleContext) == "function" then
+    campaign = self.battleContext(state, mapId, key)
+  end
   local snap = self:wildsSnapshot(true)
   local mateSpec = snap and snap.mate
     or { species = mon.species, level = mon.level }
-  local wildMate = CoopBattle.wildParty(game, { mateSpec })
+  -- A content-owned occurrence is a singular canonical encounter. Never let
+  -- the configurable second-Wild roll duplicate it into a multi-catch field.
+  local wildMate = campaign and nil or CoopBattle.wildParty(game, { mateSpec })
 
   self.encounter = {
     battle = key,
@@ -708,6 +714,7 @@ function M:onWildEncounter(game, state, mapId)
     kind = "wild",
     wildCatchMon = mon,
     wildMate = wildMate,
+    campaign = campaign,
   }
   return self:beginWildCoop()
 end

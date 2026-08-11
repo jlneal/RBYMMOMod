@@ -884,6 +884,22 @@ do
   eq(won.result, "win", "and a named winner won")
   eq(won.after, "over", "with the screen on its way out")
 
+  local captured = ended({ slots = pvpSlots(), mine = 1, host = true,
+    mode = "coop_wild", selfId = "ann", ranksPoints = false })
+  captured:onBattleOutcome({ battle = "cb1", outcome = "win", reason = "catch",
+    winners = { "ann", "bob" }, participants = { "ann", "bob" },
+    acted = { "ann", "bob" }, catcher = "bob",
+    campaignWorld = "shared-world", campaignHost = "campaign-ann",
+    campaignGeneration = 1, campaignRevision = 2,
+    campaignParticipants = { "campaign-ann", "campaign-bob" },
+    campaignActed = { "campaign-ann", "campaign-bob" },
+    campaignHosts = { "campaign-ann" },
+    campaignOccurrence = "rby:static:ARTICUNO",
+    campaignDefinition = "0123456789abcdef",
+    campaignCatcher = "campaign-bob" })
+  eq(captured.authoritativeReceipt.campaignCatcher, "campaign-bob",
+    "the immutable client receipt retains the stable partner catcher")
+
   local lost = ended({ slots = pvpSlots(), mine = 3, host = false,
                        mode = "coop_pvp", selfId = "cal", ranksPoints = true })
   eq(lost:onBattleOutcome({ battle = "cb1", outcome = "win",

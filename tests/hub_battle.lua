@@ -959,6 +959,12 @@ do
   hub:openCoopBattle("cw-catch", { ann.id, bob.id },
     { mode = "coop_wild", hostId = ann.id })
   local record = hub.battles["cw-catch"]
+  ann.worldState = { world = "shared-world", compatibility = "same",
+    player = "campaign-ann" }
+  bob.worldState = { world = "shared-world", compatibility = "same",
+    player = "campaign-bob" }
+  record.campaignOccurrence = "rby:static:ARTICUNO"
+  record.campaignDefinition = "0123456789abcdef"
 
   hub:receive(ann, { type = Wire.BATTLE_RULESET, battle = "cw-catch", chart = CHART })
   hub:receive(ann, { type = Wire.BATTLE_PARTY, battle = "cw-catch", side = "a",
@@ -988,6 +994,12 @@ do
      "in a shape the client's sanitiser accepts")
   eq(outcome.reason, "catch", "catch success reasons the outcome as catch")
   eq(outcome.catcher, ann.id, "catcher names the thrower")
+  eq(outcome.campaignCatcher, "campaign-ann",
+    "the authoritative thrower maps to one admitted Campaign actor")
+  local forged = {}; for key, value in pairs(outcome) do forged[key] = value end
+  forged.campaignCatcher = "campaign-cara"
+  eq(Wire.battleOutcome(forged), nil,
+    "an absent Campaign catcher invalidates the durable receipt")
   ok(take(annPeer, Wire.BATTLE_OUTCOME) ~= nil
      or take(bobPeer, Wire.BATTLE_OUTCOME) ~= nil,
      "both players hear the outcome")
