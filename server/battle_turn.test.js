@@ -1071,3 +1071,36 @@ test('flexible Wild seats join at boundaries, flee independently, and rejoin ret
   assert.strictEqual(restored.hp, 17, 'rejoin ignores a fresh/healed upload');
   assert.strictEqual(restored.slot, 1, 'the stable field slot is retained');
 });
+
+test('a second human can independently catch a dynamically admitted second Wild', () => {
+  const fighter = (playerId, name, species, speed, bag) => ({
+    playerId, name, bag, mons: [mn({
+      species, spd: speed, moves: [mv('splash', 0, 255, 0)],
+    })],
+  });
+  const battle = build({
+    id: 'double-wild', mode: 'coop_wild', seed: 7,
+    choiceTimeout: 60, reconnectGrace: 60,
+    sides: {
+      a: [fighter('p1', 'Ann', 'Alpha', 100, { MASTER_BALL: 1 })],
+      b: [fighter('w1', 'WILD', 'Beta', 1)],
+    },
+  });
+  battle.drainEvents();
+
+  assert.strictEqual(battle.admitWild(fighter('w2', 'WILD', 'Delta', 1)), true);
+  assert.strictEqual(battle.admit('a',
+    fighter('p2', 'Bob', 'Gamma', 90, { MASTER_BALL: 1 })), true);
+  battle.drainEvents();
+
+  battle.submitChoice('p1', { action: 'item', item: 'MASTER_BALL' });
+  battle.submitChoice('p2', { action: 'item', item: 'MASTER_BALL' });
+  battle.submitChoice('w1', { action: 'fight', move: 0 });
+  battle.submitChoice('w2', { action: 'fight', move: 0 });
+  const resolved = battle.drainEvents();
+  const outcome = battle.outcome();
+
+  assert.strictEqual(outcome.catches.length, 2);
+  assert.deepStrictEqual(outcome.catches.map((entry) => entry.catcher), ['p1', 'p2']);
+  assert.strictEqual(resolved.filter((event) => event.t === 'caught').length, 2);
+});

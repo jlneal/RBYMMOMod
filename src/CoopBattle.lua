@@ -205,6 +205,21 @@ function M.trainerParty(game, oppClass, partyIndex)
   return out
 end
 
+-- Build a reserved Wild from a normalized species/level specification. Wilds
+-- of Kanto supplies this shape when installed; the fallback caller supplies
+-- the initiating encounter's own species and level.
+function M.wildParty(game, specs)
+  local eng = loadEngine()
+  if not (eng and eng.Pokemon) then return nil end
+  local out = {}
+  for _, spec in ipairs(specs or {}) do
+    local ok, mon = pcall(eng.Pokemon.new, game.data, spec.species, spec.level)
+    if not (ok and mon) then return nil end
+    out[#out + 1] = mon
+  end
+  return #out > 0 and out or nil
+end
+
 -- Map a battleMon / caught-sheet species token to a pokedex registry id.
 -- Sheets narrate under Wire.name(display); Pokemon.new needs the registry key.
 -- Prefer speciesId when present (upload-time snapshots); else the species
@@ -399,6 +414,7 @@ function M.new(game, opts)
     -- the host's side-b upload (else snapshot of wildCatchMon at upload time).
     wildCatchMon = opts.wildCatchMon,
     wildParty = opts.wildParty,
+    wildMate = opts.wildMate,
     mediated = false,
     medUploaded = false,
     medFailed = false, -- upload refused; do not fall back to host-sim
@@ -5198,6 +5214,13 @@ function M:uploadMediated()
     -- slots). Sheets from wildParty or a snapshot of wildCatchMon.
     local wild = self:wildMons()
     if wild and #wild > 0 then
+      if type(self.wildMate) == "table" and #self.wildMate > 0 then
+        self.transport:send(Wire.COOP_RELAY, { payload = {
+          t = "wild_mate",
+          party = M.packParty(self.wildMate),
+          mons = Mediated.snapshotMons(self.game, self.wildMate),
+        } })
+      end
       Mediated.sendParty(self.transport, self.battleId, wild, "b")
     else
       mod.log:warn("the wild POKeMON could not be described for a refereed "
@@ -5300,7 +5323,7 @@ end
 function M:onBattleSeat(msg)
   if not (self.battleId and msg.battle == self.battleId and self.sim) then return false end
   for _, slot in ipairs(self.sim.slots or {}) do
-    if slot.owner == msg.playerId then
+    if slot.owner == msg.playerId or slot.medPlayerId == msg.playerId then
       if not slot.battler then self.sim:sendOut(slot, slot.active) end
       return true
     end
@@ -5312,8 +5335,10 @@ function M:onBattleSeat(msg)
     party[#party + 1] = mon
   end
   if #party == 0 then return false end
-  return self.sim:addSlot({ side = msg.side, owner = msg.playerId,
-    name = msg.name, party = party, badges = msg.badges }) ~= nil
+  return self.sim:addSlot({ side = msg.side,
+    owner = msg.synthetic and nil or msg.playerId,
+    medPlayerId = msg.playerId, name = msg.name,
+    party = party, badges = msg.badges }) ~= nil
 end
 
 -- ------- 3. the event stream
@@ -5505,6 +5530,11 @@ function M:onBattleEvent(msg)
       self.result = "run"
     end
   end
+  if msg.t == "caught" then
+    local index = self:medSlotOf(msg)
+    local slot = index and self.sim:slot(index)
+    if slot then slot.battler = nil end
+  end
 
   -- A peer answered this turn. Applied now, not batched with narration: the
   -- wait line has to drop their name the moment the hub accepts the choice,
@@ -5672,8 +5702,18 @@ function M:onBattleOutcome(msg)
     self.medPending[#self.medPending + 1] = { kind = "msg", text = why }
   end
   self:medFlush()
-  -- Catcher-only grant: everyone sees Gotcha; only msg.catcher adds the mon.
-  if msg.reason == "catch" then
+  -- Catcher-only grants. A two-Wild field can carry one catch for each human;
+  -- the legacy singular fields remain accepted for one-Wild hubs.
+  if type(msg.catches) == "table" then
+    for _, entry in ipairs(msg.catches) do
+      if entry.catcher == self.selfId or tostring(entry.catcher) == tostring(self.selfId) then
+        -- In a two-Wild field the local engine encounter always points at the
+        -- original Wild, which may not be the target this player caught.
+        -- Rebuild from the authoritative per-catch sheet instead.
+        self:grantCatch({ caught = entry.caught, forceSheet = true })
+      end
+    end
+  elseif msg.reason == "catch" then
     local catcher = msg.catcher
     if catcher ~= nil and (catcher == self.selfId
         or tostring(catcher) == tostring(self.selfId)) then
@@ -5691,7 +5731,7 @@ end
 -- often does not; rebuild from msg.caught (Effects.caughtSheet) so a catcher
 -- who never held the wild can still Party.add / Boxes.deposit.
 function M:grantCatch(msg)
-  local mon = self.wildCatchMon
+  local mon = not (msg and msg.forceSheet) and self.wildCatchMon or nil
   if not mon and msg and msg.caught then
     mon = M.monFromCaughtSheet(self.game, msg.caught)
     if not mon then

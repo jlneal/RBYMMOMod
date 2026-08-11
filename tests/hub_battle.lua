@@ -781,10 +781,10 @@ do
     eligibleIds = { ann.id, bob.id },
   })
   hub:fillBattleParty(record, ann, {
-    battle = "cw-flex", side = "a", mons = { mon() },
+    battle = "cw-flex", side = "a", mons = { mon({ hp = 999 }) },
   })
   hub:fillBattleParty(record, ann, {
-    battle = "cw-flex", side = "b", mons = { mon({ species = "WILD" }) },
+    battle = "cw-flex", side = "b", mons = { mon({ species = "WILD", hp = 999 }) },
   })
   record.ruleset = { chart = CHART }
   ok(hub:tryStartSim(record), "a one-human flexible Wild sim starts immediately")
@@ -846,6 +846,32 @@ do
   local reoffer = take(bobPeer, Wire.COOP_OFFER)
   eq(reoffer and reoffer.battle, "ROUTE_1|WILD",
     "the runner can explicitly rejoin the same encounter")
+end
+
+do
+  local hub = Hub.new({ maxPlayers = 4, wildDoubleRate = 100 })
+  hub.forceBattleSeed = 88006
+  local ann = join(hub, "ANN")
+  local bob, bobPeer = join(hub, "BOB")
+  local record = hub:openMediatedBattle("cw-double", {
+    mode = "coop_wild", hostId = ann.id, memberIds = { ann.id },
+    eligibleIds = { ann.id, bob.id },
+  })
+  hub:fillBattleParty(record, ann, { battle = record.id, side = "a", mons = { mon() } })
+  hub:fillBattleParty(record, ann, { battle = record.id, side = "b",
+    mons = { mon({ species = "WILD1" }) } })
+  record.ruleset = { chart = CHART }
+  hub:tryStartSim(record)
+  record.reservedWild = { mon({ species = "WILD2" }) }
+  record.packedWild = { { species = "PACKED_WILD2" } }
+  bobPeer.outbox = {}
+  ok(hub:queueBattleAdmission(record, bob, { battle = record.id, side = "a",
+    mons = { mon({ species = "ALLY" }) } }) == false,
+    "the admission waits behind the Wild's prefilled opening choice")
+  record.sim:submitChoice(ann.id, { action = "fight", move = 0 })
+  hub:flushBattle(record)
+  eq(#record.sides.b, 2, "the authoritative field gains exactly one second Wild")
+  eq(#record.sim.bySide.b, 2, "the Lua turn machine owns both Wild targets")
 end
 
 do

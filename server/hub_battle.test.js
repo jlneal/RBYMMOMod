@@ -88,7 +88,7 @@ function mon(power, hp) {
     species: 'MONA',
     level: 50,
     hp: hp === undefined ? 100 : hp,
-    maxHp: 100,
+    maxHp: Math.max(100, hp === undefined ? 100 : hp),
     stats: { atk: 120, def: 40, spd: 80, spc: 80 },
     moves: [{
       id: 'm1', pp: 15, power, accuracy: 255, type: 0, effect: 0, chance: 0,
@@ -411,10 +411,10 @@ function testFlexibleWildAdmissionBoundary() {
     eligibleIds: [a.id, b.id],
   });
   relay.fillBattleParty(record, relay.get(a.id), {
-    battle: 'cw-flex', side: 'a', mons: [mon(10)], bag: [],
+    battle: 'cw-flex', side: 'a', mons: [mon(1, 999)], bag: [],
   });
   relay.fillBattleParty(record, relay.get(a.id), {
-    battle: 'cw-flex', side: 'b', mons: [mon(10)], bag: [],
+    battle: 'cw-flex', side: 'b', mons: [mon(1, 999)], bag: [],
   });
   record.ruleset = { chart: [[100]] };
   ok(relay.tryStartSim(record), 'one-human flexible Wild starts immediately');
@@ -504,6 +504,36 @@ function testFlexibleWildBootstrapCapture() {
     'the Node hub retains the engine-packed human bootstrap');
   ok(record.packedField.slots[0].side === 'a',
     "and retains the host's packed initial field");
+}
+
+function testFlexibleWildSecondTarget() {
+  const relay = new Relay({ maxPlayers: 4, wildDoubleRate: 100 });
+  const a = dial(relay, 'DOUBLEA');
+  const b = dial(relay, 'DOUBLEB');
+  const record = relay.openMediatedBattle('cw-double', {
+    mode: 'coop_wild', hostId: a.id, memberIds: [a.id],
+    eligibleIds: [a.id, b.id],
+  });
+  relay.fillBattleParty(record, relay.get(a.id), {
+    battle: record.id, side: 'a', mons: [mon(10)], bag: [],
+  });
+  relay.fillBattleParty(record, relay.get(a.id), {
+    battle: record.id, side: 'b', mons: [mon(10)], bag: [],
+  });
+  record.ruleset = { chart: [[100]] };
+  relay.tryStartSim(record);
+  record.reservedWild = [mon(10)];
+  record.packedWild = [{ species: 'PACKED_WILD2' }];
+  b.peer.outbox = [];
+  ok(relay.queueBattleAdmission(record, relay.get(b.id), {
+    battle: record.id, side: 'a', mons: [mon(10)], bag: [],
+  }) === false, "the admission waits behind the Wild's prefilled opening choice");
+  record.sim.submitChoice(a.id, { action: 'fight', move: 0 });
+  relay.flushBattle(record);
+  ok(record.sides.b.length === 2, 'the authoritative field gains one second Wild');
+  ok(record.sim.bySide.b.length === 2, 'the Node turn machine owns both Wild targets');
+  const seat = take(b, 'mmo.battle_seat');
+  ok(seat && seat.synthetic === true, 'the dynamic foe is ownerless on clients');
 }
 
 function testCoopWildCatchCatcher() {
@@ -670,6 +700,7 @@ testDrawCarriesNoLists();
 testCoopNpcMediated();
 testCoopWildSeating();
 testFlexibleWildAdmissionBoundary();
+testFlexibleWildSecondTarget();
 testFlexibleWildBootstrapCapture();
 testCoopWildCatchCatcher();
 testTradeRelayStillWorks();

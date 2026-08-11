@@ -1363,14 +1363,17 @@ function M:battleFighter(record, seat)
   if not party then return nil end
   local client = self.clients[seat]
   record.bags = record.bags or {}
-  if not record.bags[seat] and self:isNpcSeat(record, seat) then
+  if not record.bags[seat] and record.mode == "coop_npc"
+      and self:isNpcSeat(record, seat) then
     record.bags[seat] = self:cloneBagMap(Turn.DEFAULT_NPC_BAG)
   end
   local bag = record.bags[seat]
+  local npcName = (record.mode == "wild" or record.mode == "coop_wild")
+    and "WILD" or "TRAINER"
   return {
     playerId = seat,
     name = (client and client.name)
-      or (self:isNpcSeat(record, seat) and "TRAINER" or seat),
+      or (self:isNpcSeat(record, seat) and npcName or seat),
     mons = party.mons,
     badges = party.badges,
     bag = bag and self:cloneBagMap(bag) or nil,
@@ -1401,6 +1404,7 @@ function M:applyBattleAdmissions(record)
   for clientId in pairs(record.pendingAdmissions or {}) do ids[#ids + 1] = clientId end
   table.sort(ids)
   for _, clientId in ipairs(ids) do
+    if not record.sim.byId[clientId] then self:decideSecondWild(record, clientId) end
     local fighter = self:battleFighter(record, clientId)
     if fighter then self:announceBattleSeat(record, clientId) end
     if fighter and record.sim:admit("a", fighter) then
@@ -1427,19 +1431,40 @@ function M:applyBattleAdmissions(record)
   return false
 end
 
-function M:announceBattleSeat(record, clientId)
+function M:decideSecondWild(record, entrantId)
+  if not record or record.wildFormationDecided then return false end
+  record.wildFormationDecided = true
+  if not (record.reservedWild and record.packedWild and record.sim
+      and self.wildDoubleRate > 0) then return false end
+  if record.sim.rng:nextInt(1, 100) > self.wildDoubleRate then return false end
+  local npcId = record.id .. "_wild2"
+  local fighter = { playerId = npcId, name = "WILD", mons = record.reservedWild }
+  if not record.sim:admitWild(fighter) then return false end
+  record.npcIds[#record.npcIds + 1] = npcId
+  record.sides.b[#record.sides.b + 1] = npcId
+  record.parties[npcId] = { battle = record.id, side = "b",
+    mons = record.reservedWild }
+  record.packedParties[npcId] = record.packedWild
+  self:announceBattleSeat(record, npcId, entrantId)
+  return true
+end
+
+function M:announceBattleSeat(record, clientId, extraClientId)
   local fighter = self:battleFighter(record, clientId)
   local party = record and record.parties[clientId]
   if not (fighter and party) then return false end
   local payload = { battle = record.id, playerId = clientId,
-    name = fighter.name, side = "a", mons = party.mons, badges = party.badges }
+    name = fighter.name, side = fighter.side or party.side or "a",
+    mons = party.mons, badges = party.badges,
+    synthetic = self:isNpcSeat(record, clientId) or nil }
   local sent = {}
   for _, memberId in ipairs(record.memberIds or {}) do
     local member = self.clients[memberId]
     if member and member.ready then send(member, Wire.BATTLE_SEAT, payload); sent[memberId] = true end
   end
-  local entrant = self.clients[clientId]
-  if entrant and entrant.ready and not sent[clientId] then
+  local recipientId = extraClientId or clientId
+  local entrant = self.clients[recipientId]
+  if entrant and entrant.ready and not sent[recipientId] then
     send(entrant, Wire.BATTLE_SEAT, payload)
   end
   return true
@@ -2849,6 +2874,18 @@ handlers[Wire.COOP_RELAY] = function(self, client, msg)
       end
     elseif msg.payload.t == "field" and client.id == mediated.hostId then
       mediated.packedField = msg.payload.field
+    elseif msg.payload.t == "wild_mate" and client.id == mediated.hostId
+        and type(msg.payload.party) == "table" and type(msg.payload.mons) == "table" then
+      local mons = {}
+      for _, raw in ipairs(msg.payload.mons) do
+        local mon = Wire.battleMon(raw)
+        if not mon or #mons >= Config.BATTLE_MON_MAX then mons = nil; break end
+        mons[#mons + 1] = mon
+      end
+      if mons and #mons > 0 then
+        mediated.reservedWild = mons
+        mediated.packedWild = msg.payload.party
+      end
     end
   end
   if mediated and mediated.sim then

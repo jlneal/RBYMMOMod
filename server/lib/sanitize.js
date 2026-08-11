@@ -533,7 +533,7 @@ const BATTLE_ACTIONS = new Map([
  * differently.
  */
 const BATTLE_EVENT_TYPES = new Set([
-  'msg', 'anim', 'damage', 'drain', 'faint', 'send', 'status', 'stat',
+  'msg', 'anim', 'damage', 'drain', 'faint', 'caught', 'send', 'status', 'stat',
   'switch', 'item', 'run', 'turn', 'over', 'wait', 'reconnect',
   'chose', 'unchose', 'moves',
 ]);
@@ -1185,6 +1185,18 @@ function cleanBattleOutcome(raw) {
     if (!catcher) return null;
     result.catcher = catcher;
   }
+  if (raw.catches !== undefined && raw.catches !== null) {
+    if (!Array.isArray(raw.catches) || !raw.catches.length
+        || raw.catches.length > COOP_SIDE) return null;
+    result.catches = [];
+    for (const entry of raw.catches) {
+      if (!entry || typeof entry !== 'object') return null;
+      const catcher = cleanId(entry.catcher);
+      const caught = cleanBattleMon(entry.caught);
+      if (!catcher || !caught) return null;
+      result.catches.push({ catcher, caught });
+    }
+  }
   return result;
 }
 
@@ -1213,7 +1225,9 @@ function cleanBattleSeat(raw) {
     mons.push(mon);
   }
   if (!mons.length) return null;
-  return { battle, playerId, name, side, mons, badges: cleanBadgeSet(raw.badges) };
+  return { battle, playerId, name, side, mons,
+    badges: cleanBadgeSet(raw.badges),
+    synthetic: raw.synthetic === true ? true : undefined };
 }
 
 module.exports = {

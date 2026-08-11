@@ -2935,6 +2935,37 @@ do
   eq(fighterIn(battle:snapshot(), "p2").slot, 1, "rejoin preserves the field slot")
 end
 
+do
+  local splash = move({ id = "splash", power = 0, effect = 85 })
+  local battle = battleOf({ mode = "coop_wild", sides = {
+    a = { { playerId = "p1", name = "Ann", bag = { MASTER_BALL = 1 },
+      mons = { mon({ species = "Alpha", spd = 100, moves = { splash } }) } } },
+    b = { { playerId = "w1", name = "WILD",
+      mons = { mon({ species = "Beta", spd = 1, moves = { splash } }) } } },
+  } })
+  drain(battle)
+  ok(battle:admitWild({ playerId = "w2", name = "WILD",
+    mons = { mon({ species = "Delta", spd = 1, moves = { splash } }) } }),
+    "the optional second Wild enters only at a clean boundary")
+  ok(battle:admit("a", { playerId = "p2", name = "Bob",
+    bag = { MASTER_BALL = 1 },
+    mons = { mon({ species = "Gamma", spd = 90, moves = { splash } }) } }),
+    "the second human enters the same double-Wild boundary")
+  drain(battle)
+  battle:submitChoice("p1", { action = "item", item = "MASTER_BALL" })
+  battle:submitChoice("p2", { action = "item", item = "MASTER_BALL" })
+  battle:submitChoice("w1", { action = "fight", move = 0 })
+  battle:submitChoice("w2", { action = "fight", move = 0 })
+  local events = drain(battle)
+  eq(#(battle.result and battle.result.catches or {}), 2,
+    "two humans can independently catch the two Wild targets")
+  eq(battle.result.catches[1].catcher, "p1", "the first catch belongs to its thrower")
+  eq(battle.result.catches[2].catcher, "p2", "the second catch belongs to its thrower")
+  local caught = 0
+  for _, event in ipairs(events) do if event.t == "caught" then caught = caught + 1 end end
+  eq(caught, 2, "both captured field sprites receive an authoritative removal event")
+end
+
 -- ------------------------------------------------------------------
 -- 14. the vocabulary, on everything every scenario above produced
 -- ------------------------------------------------------------------

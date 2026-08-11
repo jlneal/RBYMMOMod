@@ -40,7 +40,7 @@ const {
   KINDS, SCOPES, NAME_MAX, MESSAGE_MAX, MOTD_MAX, LOCAL_RADIUS,
   cleanBattleKey, cleanCoopReason, cleanCoopOfferMode, cleanLabel, cleanPartyEvent, PARTY_MAX,
   cleanBattleRuleset, cleanBattleParty, cleanBattleChoice, cleanBattleReconnect,
-  BATTLE_MOVE_MAX,
+  cleanBattleMon, BATTLE_MOVE_MAX, BATTLE_MON_MAX,
 } = require('./sanitize');
 const { Turn } = require('./battle');
 const Effects = require('./battle/Effects');
@@ -932,6 +932,18 @@ handlers['mmo.coop_relay'] = (relay, client, msg) => {
       // coopField is already bounded by payloadOk on this internal bootstrap;
       // the client runs the stricter field sanitizer before constructing it.
       mediated.packedField = msg.payload.field;
+    } else if (msg.payload.t === 'wild_mate' && client.id === mediated.hostId
+        && Array.isArray(msg.payload.party) && Array.isArray(msg.payload.mons)) {
+      const mons = [];
+      for (const raw of msg.payload.mons) {
+        const mon = cleanBattleMon(raw);
+        if (!mon || mons.length >= BATTLE_MON_MAX) { mons.length = 0; break; }
+        mons.push(mon);
+      }
+      if (mons.length) {
+        mediated.reservedWild = mons;
+        mediated.packedWild = msg.payload.party;
+      }
     }
   }
   if (mediated && mediated.sim) {
@@ -2595,14 +2607,17 @@ class Relay {
     if (!party) return null;
     const client = this.clients.get(seat);
     if (!record.bags) record.bags = new Map();
-    if (!record.bags.has(seat) && this.isNpcSeat(record, seat)) {
+    if (!record.bags.has(seat) && record.mode === 'coop_npc'
+        && this.isNpcSeat(record, seat)) {
       record.bags.set(seat, this.cloneBagMap(Turn.DEFAULT_NPC_BAG));
     }
     const bag = record.bags.get(seat);
+    const npcName = record.mode === 'wild' || record.mode === 'coop_wild'
+      ? 'WILD' : 'TRAINER';
     return {
       playerId: seat,
       name: (client && client.name)
-        || (this.isNpcSeat(record, seat) ? 'TRAINER' : seat),
+        || (this.isNpcSeat(record, seat) ? npcName : seat),
       mons: party.mons,
       badges: party.badges,
       bag: this.cloneBagMap(bag) || undefined,
@@ -2627,6 +2642,7 @@ class Relay {
     if (!record || !record.sim || !record.sim.canChangeSeats()) return false;
     const ids = Array.from(record.pendingAdmissions || []).sort();
     for (const clientId of ids) {
+      if (!record.sim.byId.has(clientId)) this.decideSecondWild(record, clientId);
       const fighter = this.battleFighter(record, clientId);
       if (fighter) this.announceBattleSeat(record, clientId);
       if (fighter && record.sim.admit('a', fighter)) {
@@ -2647,21 +2663,41 @@ class Relay {
     return false;
   }
 
-  announceBattleSeat(record, clientId) {
+  decideSecondWild(record, entrantId) {
+    if (!record || record.wildFormationDecided) return false;
+    record.wildFormationDecided = true;
+    if (!record.reservedWild || !record.packedWild || !record.sim
+        || this.wildDoubleRate <= 0) return false;
+    if (record.sim.rng.nextInt(1, 100) > this.wildDoubleRate) return false;
+    const npcId = `${record.id}_wild2`;
+    if (!record.sim.admitWild({ playerId: npcId, name: 'WILD',
+      mons: record.reservedWild })) return false;
+    record.npcIds.push(npcId);
+    record.sides.b.push(npcId);
+    record.parties.set(npcId, { battle: record.id, side: 'b',
+      mons: record.reservedWild });
+    record.packedParties.set(npcId, record.packedWild);
+    this.announceBattleSeat(record, npcId, entrantId);
+    return true;
+  }
+
+  announceBattleSeat(record, clientId, extraClientId) {
     const fighter = this.battleFighter(record, clientId);
     const party = record && record.parties.get(clientId);
     if (!fighter || !party) return false;
     const payload = {
       battle: record.id, playerId: clientId, name: fighter.name,
-      side: 'a', mons: party.mons, badges: party.badges,
+      side: fighter.side || party.side || 'a', mons: party.mons,
+      badges: party.badges, synthetic: this.isNpcSeat(record, clientId) || undefined,
     };
     const sent = new Set();
     for (const memberId of record.memberIds || []) {
       const member = this.clients.get(memberId);
       if (member && member.ready) { this.send(member, 'mmo.battle_seat', payload); sent.add(memberId); }
     }
-    const entrant = this.clients.get(clientId);
-    if (entrant && entrant.ready && !sent.has(clientId)) {
+    const recipientId = extraClientId || clientId;
+    const entrant = this.clients.get(recipientId);
+    if (entrant && entrant.ready && !sent.has(recipientId)) {
       this.send(entrant, 'mmo.battle_seat', payload);
     }
     return true;

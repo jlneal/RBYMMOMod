@@ -464,6 +464,7 @@ function M.create(opts)
     turn           = 1,
     seq            = 0,
     buffer         = {},
+    catches        = {},
     fighters       = {},
     byId           = {},
     bySide         = { a = {}, b = {} },
@@ -846,6 +847,32 @@ function Battle:admit(side, entry)
       hp = mon.hp, text = mon.species })
   end
   if self.choiceTimeout > 0 then self.deadline = self.now + self.choiceTimeout end
+  return true
+end
+
+function Battle:admitWild(entry)
+  if not self:canChangeSeats() or self.mode ~= "coop_wild"
+      or type(entry) ~= "table" or #self.bySide.b >= 2 then return false end
+  local playerId = str(entry.playerId)
+  if not playerId or self.byId[playerId] then return false end
+  local mons = {}
+  for i = 1, #(entry.mons or {}) do
+    if #mons >= M.MONS_PER_PARTY then break end
+    local mon = copyMon(entry.mons[i], #mons)
+    if mon then mons[#mons + 1] = mon end
+  end
+  if #mons == 0 then return false end
+  local index = #self.bySide.b + 1
+  local fighter = { playerId = playerId, name = str(entry.name) or "WILD",
+    side = "b", index = index, slot = Events.fieldSlot("b", index), mons = mons,
+    badges = nil, bag = nil, active = firstLiving(mons), present = true,
+    connected = true, graceEndsAt = nil, choice = nil }
+  self.fighters[#self.fighters + 1] = fighter
+  self.byId[playerId] = fighter
+  self.bySide.b[#self.bySide.b + 1] = fighter
+  local mon = activeMon(fighter)
+  if mon then self:_emit("send", { slot = fighter.slot, side = "b",
+    hp = mon.hp, text = mon.species }) end
   return true
 end
 
@@ -1634,11 +1661,24 @@ function Battle:_resolveOneItem(fighter)
         end
         if caught then
           self:_say("Gotcha")
-          local finish = self:_finish("win", self:_sidePlayers(fighter.side),
-            self:_sidePlayers(fighter.side == "a" and "b" or "a"), "catch")
           local sheet = Effects.caughtSheet(target)
-          if finish and sheet then finish.caught = sheet end
-          if finish then finish.catcher = fighter.playerId end
+          if #self.bySide[foe.side] == 1 then
+            local finish = self:_finish("win", self:_sidePlayers(fighter.side),
+              self:_sidePlayers(foe.side), "catch")
+            if finish and sheet then finish.caught = sheet end
+            if finish then finish.catcher = fighter.playerId end
+          else
+            if sheet then self.catches[#self.catches + 1] = {
+              catcher = fighter.playerId, caught = sheet,
+            } end
+            target.hp = 0
+            foe.present = false
+            self:_emit("caught", { slot = foe.slot, side = foe.side,
+              text = target.species })
+            if not self:_sideAlive(foe.side) then
+              self:_finish("win", self:_sidePlayers(fighter.side), nil, "catch")
+            end
+          end
         else
           self:_say("It broke free")
         end
@@ -2568,6 +2608,9 @@ function Battle:_finish(outcome, winners, losers, reason)
     losers = losers,
     reason = reason,
   }
+  if #self.catches > 0 then
+    self.result.catches = self.catches
+  end
   self.phase = "over"
   self.deadline = nil
   self.resolveDeadline = nil

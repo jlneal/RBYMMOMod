@@ -1505,7 +1505,7 @@ end
 --   unchose    -- cancel cleared a filed answer
 --   moves      -- mid-fight move-list sync after Transform/Mimic
 M.BATTLE_EVENTS = {
-  msg = true, anim = true, damage = true, drain = true, faint = true,
+  msg = true, anim = true, damage = true, drain = true, faint = true, caught = true,
   send = true, status = true, stat = true, switch = true, item = true,
   run = true, turn = true, over = true, wait = true, reconnect = true,
   chose = true, unchose = true, moves = true,
@@ -1675,6 +1675,17 @@ function M.battleOutcome(raw)
     out.catcher = M.id(raw.catcher)
     if not out.catcher then return nil end
   end
+  if raw.catches ~= nil then
+    if type(raw.catches) ~= "table" then return nil end
+    out.catches = {}
+    for _, entry in ipairs(raw.catches) do
+      if #out.catches >= Config.COOP_SIDE or type(entry) ~= "table" then return nil end
+      local catcher, caught = M.id(entry.catcher), M.battleMon(entry.caught)
+      if not (catcher and caught) then return nil end
+      out.catches[#out.catches + 1] = { catcher = catcher, caught = caught }
+    end
+    if #out.catches == 0 then return nil end
+  end
   return out
 end
 
@@ -1709,7 +1720,8 @@ function M.battleSeatUpdate(raw)
   end
   if #mons == 0 then return nil end
   return { battle = battle, playerId = playerId, name = name, side = side,
-    mons = mons, badges = M.badges(raw.badges) }
+    mons = mons, badges = M.badges(raw.badges),
+    synthetic = raw.synthetic == true or nil }
 end
 
 -- The shapes a mediated fight comes in.

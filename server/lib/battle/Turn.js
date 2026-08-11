@@ -518,6 +518,7 @@ class Battle {
     this.deadline = null;
     this.resolveDeadline = null;
     this.buffer = [];
+    this.catches = [];
     this.fighters = [];
     // A Map, not an object: a playerId is attacker-supplied and "__proto__" is
     // a perfectly legal string.
@@ -813,6 +814,32 @@ class Battle {
       this._emit('send', { slot: fighter.slot, side, hp: mon.hp, text: mon.species });
     }
     if (this.choiceTimeout > 0) this.deadline = this.now + this.choiceTimeout;
+    return true;
+  }
+
+  admitWild(entry) {
+    if (!this.canChangeSeats() || this.mode !== 'coop_wild'
+        || !isTable(entry) || this.bySide.b.length >= 2) return false;
+    const playerId = str(entry.playerId);
+    if (!playerId || this.byId.has(playerId)) return false;
+    const mons = [];
+    for (const raw of (Array.isArray(entry.mons) ? entry.mons : [])) {
+      if (mons.length >= MONS_PER_PARTY) break;
+      const mon = copyMon(raw, mons.length);
+      if (mon) mons.push(mon);
+    }
+    if (!mons.length) return false;
+    const index = this.bySide.b.length + 1;
+    const fighter = { playerId, name: str(entry.name) || 'WILD', side: 'b',
+      index, slot: Events.fieldSlot('b', index), mons, badges: null, bag: null,
+      active: firstLiving(mons), present: true, connected: true,
+      graceEndsAt: null, choice: null };
+    this.fighters.push(fighter);
+    this.byId.set(playerId, fighter);
+    this.bySide.b.push(fighter);
+    const mon = activeMon(fighter);
+    if (mon) this._emit('send', { slot: fighter.slot, side: 'b', hp: mon.hp,
+      text: mon.species });
     return true;
   }
 
@@ -1579,15 +1606,22 @@ class Battle {
           if (result.shakes > 0 && !result.caught) this._say('The ball shook');
           if (result.caught) {
             this._say('Gotcha');
-            const finish = this._finish(
-              'win',
-              this._sidePlayers(fighter.side),
-              this._sidePlayers(fighter.side === 'a' ? 'b' : 'a'),
-              'catch',
-            );
             const sheet = Effects.caughtSheet(target);
-            if (finish && sheet) finish.caught = sheet;
-            if (finish) finish.catcher = fighter.playerId;
+            if (this.bySide[foe.side].length === 1) {
+              const finish = this._finish('win', this._sidePlayers(fighter.side),
+                this._sidePlayers(foe.side), 'catch');
+              if (finish && sheet) finish.caught = sheet;
+              if (finish) finish.catcher = fighter.playerId;
+            } else {
+              if (sheet) this.catches.push({ catcher: fighter.playerId, caught: sheet });
+              target.hp = 0;
+              foe.present = false;
+              this._emit('caught', { slot: foe.slot, side: foe.side,
+                text: target.species });
+              if (!this._sideAlive(foe.side)) {
+                this._finish('win', this._sidePlayers(fighter.side), null, 'catch');
+              }
+            }
           } else {
             this._say('It broke free');
           }
@@ -2531,6 +2565,9 @@ class Battle {
     const result = { battle: this.id, outcome, reason };
     if (winners) result.winners = winners;
     if (losers) result.losers = losers;
+    if (this.catches.length) {
+      result.catches = this.catches;
+    }
 
     this.result = result;
     this.phase = 'over';

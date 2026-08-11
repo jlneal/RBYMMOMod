@@ -630,6 +630,15 @@ function M.wildMonOf(state)
   return enemy and enemy.mon or nil
 end
 
+function M:wildsSnapshot(includeMate)
+  if not (mod and mod.find) then return nil end
+  local ok, found = pcall(mod.find, mod, "overworld_wild_spawns")
+  local fn = ok and found and found.exports and found.exports.coopEncounterSnapshot
+  if type(fn) ~= "function" then return nil end
+  local got, snapshot = pcall(fn, includeMate)
+  return got and type(snapshot) == "table" and snapshot or nil
+end
+
 -- Called when the engine has just pushed a wild encounter.
 --
 -- Divert only when partied, the partner is roster-online and eligible under
@@ -680,6 +689,10 @@ function M:onWildEncounter(game, state, mapId)
   local species = mon.species
   local label = Wire.label(tostring(species or ""):gsub("_", " "))
   local key = M.battleKey(mapId, species, mon.level)
+  local snap = self:wildsSnapshot(true)
+  local mateSpec = snap and snap.mate
+    or { species = mon.species, level = mon.level }
+  local wildMate = CoopBattle.wildParty(game, { mateSpec })
 
   self.encounter = {
     battle = key,
@@ -689,6 +702,7 @@ function M:onWildEncounter(game, state, mapId)
     game = game,
     kind = "wild",
     wildCatchMon = mon,
+    wildMate = wildMate,
   }
   return self:beginWildCoop()
 end
@@ -713,6 +727,7 @@ function M:beginWildCoop()
     kind = "wild",
     mode = "coop_wild",
     wildCatchMon = encounter.wildCatchMon,
+    wildMate = encounter.wildMate,
     clock = 0,
   }
   self.transport:send(Wire.COOP_WAIT, {
@@ -1411,6 +1426,7 @@ function M:onJoined(game, msg)
     engine = waiting.engine,
     trainer = waiting.trainer,
     wildCatchMon = waiting.wildCatchMon or M.wildMonOf(waiting.engine),
+    wildMate = waiting.wildMate,
     allies = allies,
     -- The player who was waiting is the one standing at the encounter, so they
     -- are the one that simulates.
@@ -2088,6 +2104,7 @@ function M:startBattle(game, field)
       if plan.kind ~= "wild" and plan.mode ~= "coop_wild" then return nil end
       return plan.wildCatchMon or M.wildMonOf(plan.engine)
     end)(),
+    wildMate = battle.plan and battle.plan.wildMate,
     -- Whether a win here is worth points, so the screen can say so once
     -- rather than leave a player wondering why their rating did not move.
     ranksPoints = M.ranksPoints(battle.plan),

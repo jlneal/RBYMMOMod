@@ -62,7 +62,7 @@ function toNumber(value) {
 //   unchose    -- cancel cleared a filed answer
 //   moves      -- mid-fight move-list sync after Transform/Mimic
 const KINDS = {
-  msg: true, anim: true, damage: true, drain: true, faint: true,
+  msg: true, anim: true, damage: true, drain: true, faint: true, caught: true,
   send: true, status: true, stat: true, switch: true, item: true,
   run: true, turn: true, over: true, wait: true, reconnect: true,
   chose: true, unchose: true, moves: true,
@@ -107,6 +107,7 @@ const SHAPES = {
   drain: { slot: true, side: true, amount: true, hp: true },
   faint: { slot: true, side: true, text: true,
     amount: '1 when the seat still has a living bench (mustReplace)' },
+  caught: { slot: true, side: true, text: 'the captured species' },
   send: { slot: true, side: true, hp: true, text: 'the species' },
   status: { slot: true, side: true, status: 'absent means cleared', text: true },
   stat: { slot: true, side: true, amount: true, text: true },
