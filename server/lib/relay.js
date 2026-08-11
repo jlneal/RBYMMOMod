@@ -49,6 +49,7 @@ const {
   RANK_QUERY_GATE_MS,
 } = require('./rank');
 const { createLog, safe } = require('./log');
+const campaignAuthority = require('./campaign-authority');
 
 const DEFAULT_PLAYERS = 4;
 const DEFAULT_SPRITE = 'SPRITE_RED';
@@ -276,6 +277,7 @@ function presenceOf(client) {
 // can be knocked over by anyone who mistypes.
 
 const handlers = Object.create(null);
+Object.assign(handlers, campaignAuthority.handlers);
 
 handlers['mmo.hello'] = (relay, client, msg) => {
   if (client.ready) return;
@@ -1226,6 +1228,7 @@ class Relay {
 
     /** id -> client */
     this.clients = new Map();
+    campaignAuthority.initialize(this);
     /** sessionId -> { a, b, kind } */
     this.sessions = new Map();
     /** partyId -> [memberId, ...] */
@@ -1766,6 +1769,8 @@ class Relay {
   drop(id) {
     const client = this.get(id);
     if (!client) return false;
+    campaignAuthority.releaseWorldRequests(this, client);
+    campaignAuthority.pruneWorldTimelines(this, client.id);
     this.endSession(client, 'peer_left');
     // Before endParty, deliberately: clearCoopOffer finds the partner *through*
     // the party, so withdrawing afterwards would withdraw into nothing and
