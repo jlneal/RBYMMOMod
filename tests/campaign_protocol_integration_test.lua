@@ -146,17 +146,17 @@ eq(bridge.admission:status().state, "writable",
 
 -- Protocol 23 proves that the embedded host relays a bounded closed-prefix
 -- package only between replicas of the same campaign.
-local hub23 = Hub.new({ maxPlayers = 2, protocol = 23 })
+local hub23 = Hub.new({ maxPlayers = 2, protocol = 24 })
 local peerA, peerB = { outbox = {} }, { outbox = {} }
 function peerA:close() self.closed = true end
 function peerB:close() self.closed = true end
 function peerA:send(message) self.outbox[#self.outbox + 1] = message end
 function peerB:send(message) self.outbox[#self.outbox + 1] = message end
 local clientA, clientB = assert(hub23:accept(peerA)), assert(hub23:accept(peerB))
-hub23:receive(clientA, { type = Wire.HELLO, proto = 23, name = "ANN",
+hub23:receive(clientA, { type = Wire.HELLO, proto = 24, name = "ANN",
   playerId = string.rep("1", 32), map = "PALLET", x = 1, y = 1,
   facing = "down" })
-hub23:receive(clientB, { type = Wire.HELLO, proto = 23, name = "BOB",
+hub23:receive(clientB, { type = Wire.HELLO, proto = 24, name = "BOB",
   playerId = string.rep("2", 32), map = "PALLET", x = 2, y = 1,
   facing = "down" })
 local world23, compatibility23 = "integration-prefix", "campaign-state.4.prefix"
@@ -188,5 +188,23 @@ eq(response23.type, CampaignWire.PREFIX,
 eq(response23.from, clientA.id, "prefix response identifies its source replica")
 eq(response23.package.base.closed, true,
   "embedded relay preserves the validated compact boundary")
+local frame24 = { schema = 1, world = world23,
+  compatibility = compatibility23, transfer = string.rep("9", 32),
+  index = 2, total = 2, kind = "state",
+  payload = { path = { "world" }, empty = true } }
+hub23:receive(clientA, { type = CampaignWire.PREFIX_FRAME, to = clientB.id,
+  frame = frame24 })
+local relayedFrame = peerB.outbox[#peerB.outbox]
+eq(relayedFrame.type, CampaignWire.PREFIX_FRAME,
+  "embedded host relays one bounded protocol-24 fragment")
+eq(relayedFrame.frame.transfer, frame24.transfer,
+  "fragment relay preserves its transfer identity")
+hub23:receive(clientB, { type = CampaignWire.PREFIX_FRAME_ACK, to = clientA.id,
+  transfer = frame24.transfer, index = frame24.index })
+local relayedAck = peerA.outbox[#peerA.outbox]
+eq(relayedAck.type, CampaignWire.PREFIX_FRAME_ACK,
+  "embedded host relays the exact fragment acknowledgement")
+eq(relayedAck.index, frame24.index,
+  "acknowledgement releases only its named frame")
 
 print(("campaign protocol integration: %d assertions passed"):format(passed))

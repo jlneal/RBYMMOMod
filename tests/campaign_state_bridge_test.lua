@@ -248,9 +248,8 @@ eq(attached19.authority:commit("grant-reset-19", {}), nil,
 eq(bridge19.authorized, false,
   "reopened save must repeat canonical frontier admission")
 
--- Protocol 23 closes the one gap ordinary missing-batch exchange cannot
--- cross: an authenticated compacted prefix is requested directly from the
--- peer that advertised the inaccessible frontier, adopted, then advertised.
+-- Protocol 23 closes the one gap ordinary missing-batch exchange cannot cross;
+-- protocol 24 adds acknowledged framing above the one-message boundary.
 local sent23, attached23, adopted23 = {}, nil, nil
 local package23 = { schema = 1, world = "world-23",
   compatibility = "campaign-state.4.prefix", batches = {},
@@ -265,6 +264,15 @@ local package23 = { schema = 1, world = "world-23",
     compatibility = "campaign-state.4.prefix", timelineHead = 0,
     canonicalDigest = string.rep("1", 16), heads = {},
     revision = string.rep("6", 16), tag = string.rep("7", 64) } }
+local packageForSend, receivedFrames, resetFrames, resetSource = package23, 0, false, nil
+local transfer24 = string.rep("8", 32)
+local frames24 = {
+  { schema = 1, world = "world-23", compatibility = "campaign-state.4.prefix",
+    transfer = transfer24, index = 1, total = 2, kind = "manifest", payload = {} },
+  { schema = 1, world = "world-23", compatibility = "campaign-state.4.prefix",
+    transfer = transfer24, index = 2, total = 2, kind = "state",
+    payload = { path = { "world" }, empty = true } },
+}
 local foundation23 = {
   apiVersion = 4,
   registerTransport = function(_, transport)
@@ -274,9 +282,18 @@ local foundation23 = {
       missing = function()
         return nil, "replica requires closed-prefix hydration"
       end,
-      closedPrefixPackage = function() return package23 end,
+      closedPrefixPackage = function() return packageForSend end,
+      closedPrefixFrames = function() return frames24 end,
       adoptClosedPrefix = function(package)
         adopted23 = package
+        return true
+      end,
+      receiveClosedPrefixFrame = function(_, frame)
+        receivedFrames = receivedFrames + 1
+        return frame.index == frame.total and { installed = true } or "pending"
+      end,
+      resetClosedPrefixFrames = function(source)
+        resetFrames, resetSource = true, source
         return true
       end,
       status = function()
@@ -303,6 +320,56 @@ eq(adopted23.base.closureDigest, package23.base.closureDigest,
   "package interpretation remains in Campaign State")
 eq(sent23[#sent23].kind, Bridge.ADVERTISE,
   "successful adoption advertises the exact hydrated frontier")
+
+local largeState = { world = {}, player = {} }
+for index = 1, 100 do largeState.world["subject" .. index] = string.rep("\1", 128) end
+local largeBase = {}
+for key, value in pairs(package23.base) do largeBase[key] = value end
+largeBase.state = largeState
+packageForSend = { schema = 1, world = package23.world,
+  compatibility = package23.compatibility, base = largeBase, batches = {},
+  frontier = package23.frontier }
+eq(bridge23:onInventory("peer-large", { signed = "behind" }), "prefix_streaming",
+  "an oversized package enters acknowledged frame streaming")
+eq(sent23[#sent23].kind, Bridge.PREFIX_FRAME,
+  "only the first large-package frame is initially in flight")
+eq(sent23[#sent23].payload.frame.index, 1,
+  "large transfer starts at its first dense frame")
+eq(bridge23:onInventory("peer-large", { signed = "still-behind" }),
+  "prefix_streaming", "repeat inventory does not restart an active stream")
+local beforeAck = #sent23
+eq(bridge23:onPrefixFrameAck("peer-large", {
+  transfer = transfer24, index = 1 }), "pending",
+  "exact acknowledgement releases the next frame")
+eq(#sent23, beforeAck + 1, "one acknowledgement releases exactly one frame")
+eq(sent23[#sent23].payload.frame.index, 2,
+  "acknowledged stream advances densely")
+check(bridge23:onPrefixFrameAck("peer-large", {
+  transfer = transfer24, index = 2 }),
+  "final acknowledgement closes the outgoing stream")
+eq(bridge23.prefixOutgoing["peer-large"], nil,
+  "completed stream retains no sender queue")
+eq(bridge23:onInventory("peer-gone", { signed = "behind" }), "prefix_streaming",
+  "another stale peer can begin a bounded stream")
+check(bridge23:onPeerUnavailable("peer-gone"),
+  "peer departure cancels its outgoing and incoming transfer state")
+eq(bridge23.prefixOutgoing["peer-gone"], nil,
+  "departed peer retains no sender queue")
+eq(resetSource, "peer-gone",
+  "Campaign State discards only that peer's incomplete assembler")
+
+eq(bridge23:onPrefixFrame("peer-source", frames24[1]), "pending",
+  "recipient stages a nonterminal fragment")
+eq(sent23[#sent23].kind, Bridge.PREFIX_FRAME_ACK,
+  "every accepted fragment is acknowledged")
+check(bridge23:onPrefixFrame("peer-source", frames24[2]),
+  "recipient advertises after the final fragment installs")
+eq(receivedFrames, 2, "Campaign State receives each fragment exactly once")
+eq(sent23[#sent23].kind, Bridge.ADVERTISE,
+  "completed fragmented adoption re-enters frontier admission")
+bridge23:reset("test disconnect")
+check(resetFrames, "transport reset discards incomplete Campaign State assemblers")
+eq(resetSource, nil, "full transport reset discards every peer assembler")
 
 -- API 4 makes durable membership the first ordered write after an invited
 -- character catches up. No unrelated reservation is admitted in between.

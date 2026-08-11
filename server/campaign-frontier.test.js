@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const {
   cleanWorldFrontier, cleanWorldGrantBase, cleanWorldFrontierAdmission,
   cleanWorldClosedBase, cleanWorldClosedPackage,
+  cleanWorldPrefixFrame, cleanWorldPrefixFrameAck,
 } = require('./lib/campaign-sanitize.js');
 
 const A = 'a'.repeat(16);
@@ -94,9 +95,23 @@ test('protocol-23 closed-prefix package is strict and bounded', () => {
   'one transport package cannot carry an unbounded tail');
   const large = structuredClone(closed);
   large.state.world = Object.fromEntries(Array.from({ length: 100 }, (_, index) =>
-    [`subject${index}`, 'x'.repeat(128)]));
+    [`subject${index}`, '\u0001'.repeat(128)]));
   assert.equal(cleanWorldClosedPackage({ schema: 1, world: current.world,
     compatibility: current.compatibility, base: large, batches: [],
     frontier: current }), null,
   'the conservative package bound fits below the 64 KiB line limit');
+});
+
+test('protocol-24 frame vocabulary is bounded and exact', () => {
+  const frame = { schema: 1, world: 'shared-kanto',
+    compatibility: 'campaign-state.4.proof', transfer: 'a'.repeat(32),
+    index: 2, total: 2, kind: 'state',
+    payload: { path: ['world'], empty: true } };
+  assert.equal(cleanWorldPrefixFrame(frame).payload.path[0], 'world');
+  assert.equal(cleanWorldPrefixFrameAck({ transfer: frame.transfer, index: 2 }).index, 2);
+  let bad = structuredClone(frame); bad.payload.path = ['bad path'];
+  assert.equal(cleanWorldPrefixFrame(bad), null);
+  bad = structuredClone(frame); bad.index = 3;
+  assert.equal(cleanWorldPrefixFrame(bad), null);
+  assert.equal(cleanWorldPrefixFrameAck({ transfer: frame.transfer, index: 0 }), null);
 });

@@ -22,6 +22,8 @@ M.FRONTIER = "mmo.world_frontier"
 M.FRONTIER_ACK = "mmo.world_frontier_ack"
 M.FRONTIER_READY = "mmo.world_frontier_ready"
 M.PREFIX = "mmo.world_prefix"
+M.PREFIX_FRAME = "mmo.world_prefix_frame"
+M.PREFIX_FRAME_ACK = "mmo.world_prefix_frame_ack"
 
 local function worldPayload(value, depth, seen, budget)
   local kind = type(value)
@@ -183,17 +185,97 @@ local function conservativeWireSize(value, budget)
   if value == nil then budget.bytes = budget.bytes + 4
   elseif kind == "boolean" then budget.bytes = budget.bytes + 5
   elseif kind == "number" then budget.bytes = budget.bytes + 32
-  elseif kind == "string" then budget.bytes = budget.bytes + (#value * 6) + 2
+  elseif kind == "string" then
+    local bytes = value:match("^[A-Za-z0-9_.:%-]*$") and #value or (#value * 6)
+    budget.bytes = budget.bytes + bytes + 2
   elseif kind == "table" then
     budget.bytes = budget.bytes + 2
     for key, child in pairs(value) do
-      if type(key) == "string" then budget.bytes = budget.bytes + (#key * 6) + 3
+      if type(key) == "string" then
+        local bytes = key:match("^[A-Za-z0-9_.:%-]*$") and #key or (#key * 6)
+        budget.bytes = budget.bytes + bytes + 3
       else budget.bytes = budget.bytes + 16 end
       conservativeWireSize(child, budget)
       if budget.bytes > M.MAX_CLOSED_PACKAGE_WIRE then return false end
     end
   else return false end
   return budget.bytes <= M.MAX_CLOSED_PACKAGE_WIRE
+end
+
+local function frameValue(value, depth, seen, budget)
+  local kind = type(value)
+  if value == nil or kind == "boolean" then return value end
+  if kind == "number" then
+    if value ~= value or value == math.huge or value == -math.huge then return nil end
+    return value
+  end
+  if kind == "string" then return #value <= 128 and value or nil end
+  if kind ~= "table" or (depth or 0) >= 12 then return nil end
+  seen, budget = seen or {}, budget or { nodes = 0 }
+  if seen[value] then return nil end
+  seen[value] = true
+  local out, numeric, textual, count, highest = {}, false, false, 0, 0
+  for key, child in pairs(value) do
+    count, budget.nodes = count + 1, budget.nodes + 1
+    if budget.nodes > 1024 then seen[value] = nil; return nil end
+    if type(key) == "number" then
+      numeric = true
+      if key < 1 or key ~= math.floor(key) then seen[value] = nil; return nil end
+      highest = math.max(highest, key)
+    elseif type(key) == "string" and CampaignIdentity.identifier(key, 96) then
+      textual = true
+    else seen[value] = nil; return nil end
+    if numeric and textual then seen[value] = nil; return nil end
+    local clean = frameValue(child, (depth or 0) + 1, seen, budget)
+    if clean == nil and child ~= nil then seen[value] = nil; return nil end
+    out[key] = clean
+  end
+  if numeric and count ~= highest then seen[value] = nil; return nil end
+  seen[value] = nil
+  return out
+end
+
+function M.worldPrefixFrame(raw)
+  if type(raw) ~= "table" or raw.schema ~= 1 then return nil end
+  local world = CampaignIdentity.identifier(raw.world, 64)
+  local compatibility = CampaignIdentity.identifier(raw.compatibility, 96)
+  local transfer = Wire.hex(raw.transfer, 32)
+  local index = Wire.int(raw.index, 1, 24576)
+  local total = Wire.int(raw.total, 1, 24576)
+  local payload = frameValue(raw.payload)
+  if not (world and compatibility and transfer and #transfer == 32
+    and index and total and index <= total and payload) then return nil end
+  local clean = { schema = 1, world = world, compatibility = compatibility,
+    transfer = transfer, index = index, total = total }
+  if raw.kind == "manifest" then
+    if type(payload.base) ~= "table" or payload.base.state ~= nil
+      or type(payload.frontier) ~= "table"
+      or not Wire.int(payload.states, 1, 24576)
+      or not Wire.int(payload.batches, 0, 24576) then return nil end
+    clean.kind, clean.payload = "manifest", payload
+  elseif raw.kind == "state" then
+    if type(payload.path) ~= "table" or #payload.path > 8 then return nil end
+    for _, part in ipairs(payload.path) do
+      if not CampaignIdentity.identifier(part, 96) then return nil end
+    end
+    local empty, hasValue = payload.empty == true, payload.value ~= nil
+    if empty == hasValue or (hasValue and type(payload.value) == "table") then return nil end
+    clean.kind, clean.payload = "state", payload
+  elseif raw.kind == "batch" then
+    local ordinal = Wire.int(raw.ordinal, 1, 24576)
+    local batch = M.worldBatch(payload)
+    if not ordinal or not batch then return nil end
+    clean.kind, clean.ordinal, clean.payload = "batch", ordinal, batch
+  else return nil end
+  return conservativeWireSize(clean, { bytes = 0 }) and clean or nil
+end
+
+function M.worldPrefixFrameAck(raw)
+  if type(raw) ~= "table" then return nil end
+  local transfer = Wire.hex(raw.transfer, 32)
+  local index = Wire.int(raw.index, 1, 24576)
+  return transfer and #transfer == 32 and index
+    and { transfer = transfer, index = index } or nil
 end
 
 function M.worldClosedPackage(raw)

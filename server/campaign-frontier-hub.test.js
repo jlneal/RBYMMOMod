@@ -180,8 +180,8 @@ test('dedicated protocol-19 hub gates positions on acknowledged frontiers', () =
   assert.equal(take(behind, 'mmo.world_sequence_grant').position, 2);
 });
 
-test('dedicated protocol-23 hub relays bounded same-world closed prefixes', () => {
-  const relay = new Relay({ maxPlayers: 2, protocol: 23, log: quiet });
+test('dedicated protocol-24 hub relays bounded prefixes and acknowledged frames', () => {
+  const relay = new Relay({ maxPlayers: 2, protocol: 24, log: quiet });
   const ann = join(relay, 'PREFIXANN');
   const bob = join(relay, 'PREFIXBOB');
   const world = 'prefix-world';
@@ -215,4 +215,17 @@ test('dedicated protocol-23 hub relays bounded same-world closed prefixes', () =
     package: malformed });
   assert.equal(take(bob, 'mmo.world_prefix'), null,
     'the relay refuses a malformed compact boundary');
+
+  const frame = { schema: 1, world, compatibility, transfer: '9'.repeat(32),
+    index: 2, total: 2, kind: 'state',
+    payload: { path: ['world'], empty: true } };
+  relay.handle(ann.id, { type: 'mmo.world_prefix_frame', to: bob.id, frame });
+  const relayedFrame = take(bob, 'mmo.world_prefix_frame');
+  assert.equal(relayedFrame.from, ann.id);
+  assert.equal(relayedFrame.frame.transfer, frame.transfer);
+  relay.handle(bob.id, { type: 'mmo.world_prefix_frame_ack', to: ann.id,
+    transfer: frame.transfer, index: frame.index });
+  const acknowledgement = take(ann, 'mmo.world_prefix_frame_ack');
+  assert.equal(acknowledgement.from, bob.id);
+  assert.equal(acknowledgement.index, frame.index);
 });

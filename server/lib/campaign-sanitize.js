@@ -172,7 +172,10 @@ function conservativeWireSize(value, budget = { bytes: 0 }) {
   if (value === null || value === undefined) budget.bytes += 4;
   else if (typeof value === 'boolean') budget.bytes += 5;
   else if (typeof value === 'number') budget.bytes += 32;
-  else if (typeof value === 'string') budget.bytes += (value.length * 6) + 2;
+  else if (typeof value === 'string') {
+    const bytes = /^[A-Za-z0-9_.:-]*$/.test(value) ? value.length : value.length * 6;
+    budget.bytes += bytes + 2;
+  }
   else if (Array.isArray(value)) {
     budget.bytes += 2;
     for (const child of value) {
@@ -181,7 +184,8 @@ function conservativeWireSize(value, budget = { bytes: 0 }) {
   } else if (value && typeof value === 'object') {
     budget.bytes += 2;
     for (const [key, child] of Object.entries(value)) {
-      budget.bytes += (key.length * 6) + 3;
+      const bytes = /^[A-Za-z0-9_.:-]*$/.test(key) ? key.length : key.length * 6;
+      budget.bytes += bytes + 3;
       if (!conservativeWireSize(child, budget)) return false;
     }
   } else return false;
@@ -207,6 +211,80 @@ function cleanWorldClosedPackage(value) {
   }
   const clean = { schema: 1, world, compatibility, base, batches, frontier };
   return conservativeWireSize(clean) ? clean : null;
+}
+
+function cleanFrameValue(value, depth = 0, budget = { nodes: 0 }) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string') return value.length <= 128 ? value : undefined;
+  if (!value || typeof value !== 'object' || depth >= 12) return undefined;
+  if (Array.isArray(value)) {
+    const out = [];
+    for (const child of value) {
+      budget.nodes += 1;
+      if (budget.nodes > 1024) return undefined;
+      const clean = cleanFrameValue(child, depth + 1, budget);
+      if (clean === undefined) return undefined;
+      out.push(clean);
+    }
+    return out;
+  }
+  const out = Object.create(null);
+  for (const [key, child] of Object.entries(value)) {
+    budget.nodes += 1;
+    if (budget.nodes > 1024 || !cleanProgressionId(key, 96)) return undefined;
+    const clean = cleanFrameValue(child, depth + 1, budget);
+    if (clean === undefined) return undefined;
+    out[key] = clean;
+  }
+  return out;
+}
+
+function cleanWorldPrefixFrame(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || value.schema !== 1) return null;
+  const world = cleanProgressionId(value.world, 64);
+  const compatibility = cleanProgressionId(value.compatibility, 96);
+  const transfer = cleanHex(value.transfer, 32);
+  const index = Number.isSafeInteger(value.index) && value.index >= 1
+    && value.index <= 24576 ? value.index : null;
+  const total = Number.isSafeInteger(value.total) && value.total >= 1
+    && value.total <= 24576 ? value.total : null;
+  const payload = cleanFrameValue(value.payload);
+  if (!world || !compatibility || !transfer || transfer.length !== 32
+      || index === null || total === null || index > total || payload === undefined) return null;
+  const clean = { schema: 1, world, compatibility, transfer, index, total };
+  if (value.kind === 'manifest') {
+    if (!payload.base || typeof payload.base !== 'object' || Array.isArray(payload.base)
+        || payload.base.state !== undefined || !payload.frontier
+        || typeof payload.frontier !== 'object' || Array.isArray(payload.frontier)
+        || !Number.isSafeInteger(payload.states) || payload.states < 1
+        || payload.states > 24576 || !Number.isSafeInteger(payload.batches)
+        || payload.batches < 0 || payload.batches > 24576) return null;
+    clean.kind = 'manifest'; clean.payload = payload;
+  } else if (value.kind === 'state') {
+    if (!Array.isArray(payload.path) || payload.path.length > 8
+        || !payload.path.every((part) => cleanProgressionId(part, 96))) return null;
+    const empty = payload.empty === true;
+    const hasValue = payload.value !== undefined;
+    if (empty === hasValue || (hasValue && typeof payload.value === 'object')) return null;
+    clean.kind = 'state'; clean.payload = payload;
+  } else if (value.kind === 'batch') {
+    const ordinal = Number.isSafeInteger(value.ordinal) && value.ordinal >= 1
+      && value.ordinal <= 24576 ? value.ordinal : null;
+    const batch = cleanWorldBatch(payload);
+    if (ordinal === null || !batch) return null;
+    clean.kind = 'batch'; clean.ordinal = ordinal; clean.payload = batch;
+  } else return null;
+  return conservativeWireSize(clean) ? clean : null;
+}
+
+function cleanWorldPrefixFrameAck(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const transfer = cleanHex(value.transfer, 32);
+  const index = Number.isSafeInteger(value.index) && value.index >= 1
+    && value.index <= 24576 ? value.index : null;
+  return transfer && transfer.length === 32 && index !== null ? { transfer, index } : null;
 }
 
 function cleanWorldInvitation(value) {
@@ -320,6 +398,7 @@ module.exports = {
   cleanProgressionId,
   cleanWorldInventory, cleanWorldBatch, cleanWorldInvitation,
   cleanWorldClosedBase, cleanWorldClosedPackage,
+  cleanWorldPrefixFrame, cleanWorldPrefixFrameAck,
   cleanWorldSequenceRequest, cleanWorldSequenceGrant,
   cleanWorldSequenceCancel, cleanWorldFrontier, cleanWorldGrantBase,
   cleanWorldFrontierAdmission,

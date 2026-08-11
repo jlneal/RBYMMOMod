@@ -125,7 +125,8 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // authoritative singular catcher. A protocol-21 client silently strips it and
 // cannot attach the personal capture consequence safely.
 // 23 adds bounded same-world closed-prefix hydration packages.
-const PROTOCOL = 23;
+// 24 adds acknowledged one-at-a-time frames for larger prefix packages.
+const PROTOCOL = 24;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right

@@ -1813,6 +1813,22 @@ handlers[CampaignWire.PREFIX] = function(_, msg)
   if from and package then campaignBridge:onPrefix(from, package) end
 end
 
+handlers[CampaignWire.PREFIX_FRAME] = function(_, msg)
+  if not campaignBridge or Config.PROTOCOL < 24 then return end
+  local from = Wire.id(msg.from)
+  local frame = CampaignWire.worldPrefixFrame(msg.frame)
+  if from and frame then campaignBridge:onPrefixFrame(from, frame) end
+end
+
+handlers[CampaignWire.PREFIX_FRAME_ACK] = function(_, msg)
+  if not campaignBridge or Config.PROTOCOL < 24 then return end
+  local from = Wire.id(msg.from)
+  local acknowledgement = CampaignWire.worldPrefixFrameAck(msg)
+  if from and acknowledgement then
+    campaignBridge:onPrefixFrameAck(from, acknowledgement)
+  end
+end
+
 handlers[CampaignWire.INVITE] = function(_, msg)
   if not campaignBridge then return end
   local from = Wire.id(msg.from)
@@ -1892,6 +1908,7 @@ handlers[Wire.PART] = function(_, msg)
   -- busy forever after the person they asked disconnects, because the hub
   -- clears pendingTo in silence and never sends a decline.
   sessions:onPeerGone(id)
+  if campaignBridge then campaignBridge:onPeerUnavailable(id) end
 end
 
 handlers[Wire.MOVE] = function(_, msg)

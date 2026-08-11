@@ -137,7 +137,10 @@ M.MOD_ID = "rby_mmo"
 --
 -- 23 lets a compacted replica push an authenticated closed-prefix package to
 -- a stale same-world peer that ordinary event-tail replication cannot reach.
-M.PROTOCOL = 23
+--
+-- 24 adds acknowledged bounded frames for packages above the single-message
+-- boundary, keeping at most one frame in flight per recipient.
+M.PROTOCOL = 24
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.

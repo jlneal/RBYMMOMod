@@ -3686,6 +3686,26 @@ handlers[CampaignWire.PREFIX] = function(self, client, msg)
   send(target, CampaignWire.PREFIX, { from = client.id, package = package })
 end
 
+handlers[CampaignWire.PREFIX_FRAME] = function(self, client, msg)
+  if self.protocol < 24 or not client.ready or not client.worldState then return end
+  local target = self.clients[Wire.id(msg.to)]
+  local frame = CampaignWire.worldPrefixFrame(msg.frame)
+  if not (target and target.ready and target.worldState and frame
+    and sameWorld(client.worldState, target.worldState)
+    and sameWorld(client.worldState, frame)) then return end
+  send(target, CampaignWire.PREFIX_FRAME, { from = client.id, frame = frame })
+end
+
+handlers[CampaignWire.PREFIX_FRAME_ACK] = function(self, client, msg)
+  if self.protocol < 24 or not client.ready or not client.worldState then return end
+  local target = self.clients[Wire.id(msg.to)]
+  local acknowledgement = CampaignWire.worldPrefixFrameAck(msg)
+  if not (target and target.ready and target.worldState and acknowledgement
+    and sameWorld(client.worldState, target.worldState)) then return end
+  send(target, CampaignWire.PREFIX_FRAME_ACK, { from = client.id,
+    transfer = acknowledgement.transfer, index = acknowledgement.index })
+end
+
 handlers[CampaignWire.INVITE] = function(self, client, msg)
   if not client.ready then return end
   local target = self.clients[Wire.id(msg.to)]

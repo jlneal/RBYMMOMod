@@ -5,6 +5,7 @@ const { cleanId } = require('./sanitize');
 const {
   cleanWorldInventory, cleanWorldBatch, cleanWorldInvitation,
   cleanWorldClosedPackage,
+  cleanWorldPrefixFrame, cleanWorldPrefixFrameAck,
   cleanWorldSequenceRequest, cleanWorldSequenceGrant,
   cleanWorldSequenceCancel, cleanWorldFrontier, cleanWorldGrantBase,
   cleanWorldFrontierAdmission,
@@ -371,6 +372,28 @@ handlers['mmo.world_prefix'] = (relay, client, msg) => {
       || !sameWorld(client.worldState, target.worldState)
       || !sameWorld(client.worldState, packageValue)) return;
   relay.send(target, 'mmo.world_prefix', { from: client.id, package: packageValue });
+};
+
+handlers['mmo.world_prefix_frame'] = (relay, client, msg) => {
+  if (relay.protocol < 24 || !client.ready || !client.worldState) return;
+  const target = relay.clients.get(cleanId(msg.to));
+  const frame = cleanWorldPrefixFrame(msg.frame);
+  if (!target || !target.ready || !target.worldState || !frame
+      || !sameWorld(client.worldState, target.worldState)
+      || !sameWorld(client.worldState, frame)) return;
+  relay.send(target, 'mmo.world_prefix_frame', { from: client.id, frame });
+};
+
+handlers['mmo.world_prefix_frame_ack'] = (relay, client, msg) => {
+  if (relay.protocol < 24 || !client.ready || !client.worldState) return;
+  const target = relay.clients.get(cleanId(msg.to));
+  const acknowledgement = cleanWorldPrefixFrameAck(msg);
+  if (!target || !target.ready || !target.worldState || !acknowledgement
+      || !sameWorld(client.worldState, target.worldState)) return;
+  relay.send(target, 'mmo.world_prefix_frame_ack', {
+    from: client.id, transfer: acknowledgement.transfer,
+    index: acknowledgement.index,
+  });
 };
 
 handlers['mmo.world_invite'] = (relay, client, msg) => {

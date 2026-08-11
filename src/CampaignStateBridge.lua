@@ -22,8 +22,11 @@ M.FRONTIER = "mmo.world_frontier"
 M.FRONTIER_ACK = "mmo.world_frontier_ack"
 M.FRONTIER_READY = "mmo.world_frontier_ready"
 M.PREFIX = "mmo.world_prefix"
+M.PREFIX_FRAME = "mmo.world_prefix_frame"
+M.PREFIX_FRAME_ACK = "mmo.world_prefix_frame_ack"
 M.MAX_OUTSTANDING = 32
 M.MAX_OFFERS = 16
+M.MAX_PREFIX_STREAMS = 8
 
 local function tableCount(value)
   local count = 0
@@ -64,7 +67,7 @@ function M.new(options)
   if type(options.send) ~= "function" then return nil, "send callback is required" end
   return setmetatable({ foundation = options.foundation, send = options.send,
     idFactory = options.idFactory, connected = options.connected,
-    api = nil, pending = {}, grants = {}, offers = {}, serial = 0,
+    api = nil, pending = {}, grants = {}, offers = {}, prefixOutgoing = {}, serial = 0,
     frontierAdmission = options.frontierAdmission == true,
     admission = nil, admittedBase = nil, authorityRevision = nil,
     authorized = false, blocked = nil, membershipPending = false,
@@ -366,9 +369,24 @@ function M:onInventory(from, inventory)
       local package, packageWhy = self.api.closedPrefixPackage()
       if not package then return nil, packageWhy end
       local bounded = CampaignWire.worldClosedPackage(package)
-      if not bounded then return nil, "closed-prefix package exceeds MMO transport boundary" end
-      self.send(M.PREFIX, { to = target, package = bounded })
-      return "prefix_sent"
+      if bounded then
+        self.send(M.PREFIX, { to = target, package = bounded })
+        return "prefix_sent"
+      end
+      if type(self.api.closedPrefixFrames) ~= "function" then
+        return nil, "closed-prefix package exceeds MMO transport boundary"
+      end
+      if self.prefixOutgoing[target] then return "prefix_streaming" end
+      if tableCount(self.prefixOutgoing) >= M.MAX_PREFIX_STREAMS then
+        return nil, "too many closed-prefix streams are pending"
+      end
+      local frames, framesWhy = self.api.closedPrefixFrames(
+        CampaignWire.MAX_CLOSED_PACKAGE_WIRE)
+      if not frames then return nil, framesWhy end
+      local row = { frames = frames, index = 1 }
+      self.prefixOutgoing[target] = row
+      self.send(M.PREFIX_FRAME, { to = target, frame = frames[1] })
+      return "prefix_streaming"
     end
     return nil, why
   end
@@ -388,6 +406,52 @@ function M:onPrefix(from, package)
   if not ok then return nil, why end
   local advertised, advertiseWhy = self:advertise()
   if not advertised then return nil, advertiseWhy end
+  return true
+end
+
+function M:onPrefixFrame(from, frame)
+  local source = CampaignIdentity.identifier(from, 64)
+  if not source or not self.api
+    or type(self.api.receiveClosedPrefixFrame) ~= "function" then
+    return nil, "closed-prefix frame adoption is unavailable"
+  end
+  local result, why = self.api.receiveClosedPrefixFrame(source, frame)
+  if not result then return nil, why end
+  self.send(M.PREFIX_FRAME_ACK, { to = source,
+    transfer = frame.transfer, index = frame.index })
+  if result == "pending" then return "pending" end
+  local advertised, advertiseWhy = self:advertise()
+  if not advertised then return nil, advertiseWhy end
+  return true
+end
+
+function M:onPrefixFrameAck(from, acknowledgement)
+  local target = CampaignIdentity.identifier(from, 64)
+  local row = target and self.prefixOutgoing[target] or nil
+  if not row or type(acknowledgement) ~= "table" then
+    return nil, "closed-prefix frame acknowledgement is unexpected"
+  end
+  local current = row.frames[row.index]
+  if acknowledgement.transfer ~= current.transfer
+    or acknowledgement.index ~= current.index then
+    return nil, "closed-prefix frame acknowledgement does not match"
+  end
+  row.index = row.index + 1
+  if row.index > #row.frames then
+    self.prefixOutgoing[target] = nil
+    return true
+  end
+  self.send(M.PREFIX_FRAME, { to = target, frame = row.frames[row.index] })
+  return "pending"
+end
+
+function M:onPeerUnavailable(raw)
+  local peer = CampaignIdentity.identifier(raw, 64)
+  if not peer then return nil, "campaign peer identity is invalid" end
+  self.prefixOutgoing[peer] = nil
+  if self.api and type(self.api.resetClosedPrefixFrames) == "function" then
+    self.api.resetClosedPrefixFrames(peer)
+  end
   return true
 end
 
@@ -458,6 +522,10 @@ end
 function M:reset(reason)
   failPending(self, reason or "multiplayer transport disconnected", true)
   self.offers = {}
+  self.prefixOutgoing = {}
+  if self.api and type(self.api.resetClosedPrefixFrames) == "function" then
+    pcall(self.api.resetClosedPrefixFrames)
+  end
   if self.admission then self.admission:reset(reason) end
   self.admittedBase = nil
   self.authorityRevision = nil

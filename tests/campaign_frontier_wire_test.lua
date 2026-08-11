@@ -122,7 +122,7 @@ local oversized = { schema = 1, world = closed.world,
 eq(Wire.worldClosedPackage(oversized), nil,
   "one protocol-23 package cannot carry an unbounded tail")
 local largeState = { world = {}, player = {} }
-for index = 1, 100 do largeState.world["subject" .. index] = string.rep("x", 128) end
+for index = 1, 100 do largeState.world["subject" .. index] = string.rep("\1", 128) end
 local largeBase = {}
 for key, value in pairs(closed) do largeBase[key] = value end
 largeBase.state = largeState
@@ -130,5 +130,24 @@ eq(Wire.worldClosedPackage({ schema = 1, world = closed.world,
   compatibility = closed.compatibility, base = largeBase, batches = {},
   frontier = frontier() }), nil,
   "protocol-23 refuses a package beyond the conservative 64 KiB wire boundary")
+
+local transfer = string.rep("a", 32)
+local stateFrame = { schema = 1, world = closed.world,
+  compatibility = closed.compatibility, transfer = transfer,
+  index = 2, total = 2, kind = "state",
+  payload = { path = { "world" }, empty = true } }
+eq(assert(Wire.worldPrefixFrame(stateFrame)).payload.path[1], "world",
+  "protocol-24 accepts one bounded checkpoint-state fragment")
+local acknowledgement = assert(Wire.worldPrefixFrameAck({
+  transfer = transfer, index = 2 }))
+eq(acknowledgement.index, 2,
+  "protocol-24 frame acknowledgement binds transfer and exact index")
+local invalidPath = {}
+for key, value in pairs(stateFrame) do invalidPath[key] = value end
+invalidPath.payload = { path = { "bad path" }, empty = true }
+eq(Wire.worldPrefixFrame(invalidPath), nil,
+  "protocol-24 refuses invalid reconstructed state paths")
+eq(Wire.worldPrefixFrameAck({ transfer = transfer, index = 0 }), nil,
+  "protocol-24 refuses an impossible acknowledgement index")
 
 print(("campaign frontier wire: %d assertions passed"):format(passed))
