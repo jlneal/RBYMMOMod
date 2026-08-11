@@ -795,6 +795,7 @@ do
     { side = "a", owner = ann.id, name = ann.name, party = { { species = "HOST" } } },
     { side = "b", name = "WILD", party = { { species = "WILD" } } },
   } }
+  record.encounterOffer = { battle = "ROUTE_1|WILD", map = "ROUTE_1" }
   record.packedParties[bob.id] = { { species = "JOINER" } }
   bobPeer.outbox = {}
   ok(hub:sendLateBattleField(record, bob), "the entrant receives an expanded packed field")
@@ -803,6 +804,8 @@ do
   bobPeer.outbox = {}
   ok(hub:sendBattleCatchup(record, bob), "the entrant receives a replay baseline")
   eq(bobPeer.outbox[1].type, Wire.BATTLE_READY, "ready precedes replayed events")
+  eq(bobPeer.outbox[1].catchup, true,
+    "the replay baseline suppresses historical self-departure")
   eq(#bobPeer.outbox - 1, #record.history, "the complete retained history follows ready")
   bobPeer.outbox = {}
   record.sim:drainEvents()
@@ -828,6 +831,21 @@ do
     "the entrant receives the same admission boundary")
   eq(bobPeer.outbox[2].type, Wire.BATTLE_READY,
     "the entrant remaps its hydrated screen before live events")
+
+  ann.peer.outbox, bobPeer.outbox = {}, {}
+  ok(record.sim:submitChoice(bob.id, { action = "run" }),
+    "the late ally may independently choose to flee")
+  ok(record.sim:submitChoice(ann.id, { action = "fight", move = 0 }),
+    "the survivor answers the same turn")
+  ok(record.sim:autoPick(record.npcIds[1]), "the Wild closes the flee turn")
+  hub:flushBattle(record)
+  eq(record.sim.byId[bob.id].present, false,
+    "independent flee vacates only that stable seat")
+  eq(bob.coopBattleId, nil, "the runner is no longer presence-busy")
+  eq(ann.coopOffer.plan, record.id, "the survivor owns a rejoin offer")
+  local reoffer = take(bobPeer, Wire.COOP_OFFER)
+  eq(reoffer and reoffer.battle, "ROUTE_1|WILD",
+    "the runner can explicitly rejoin the same encounter")
 end
 
 do

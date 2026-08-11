@@ -1453,7 +1453,7 @@ function Battle:_resolveRuns()
           fighter.present = false
           fighter.choice = nil
           self:_emit("run", { slot = fighter.slot, side = fighter.side,
-            text = fighter.name })
+            text = fighter.name, amount = 1 })
         end
       end
       return false

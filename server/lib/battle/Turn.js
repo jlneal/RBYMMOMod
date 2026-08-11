@@ -1394,7 +1394,7 @@ class Battle {
             fighter.present = false;
             fighter.choice = null;
             this._emit('run', {
-              slot: fighter.slot, side: fighter.side, text: fighter.name,
+              slot: fighter.slot, side: fighter.side, text: fighter.name, amount: 1,
             });
           }
         }

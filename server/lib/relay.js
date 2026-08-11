@@ -775,6 +775,8 @@ handlers['mmo.coop_wait'] = (relay, client, msg) => {
       mode: 'coop_wild', hostId: client.id,
       eligibleIds,
     });
+    const record = relay.battles.get(battleId);
+    if (record) record.encounterOffer = { battle, label, map };
     relay.send(client, 'mmo.coop_joined', {
       id: client.id, name: client.name, plan: battleId, immediate: true,
     });
@@ -2665,6 +2667,37 @@ class Relay {
     return true;
   }
 
+  reofferFlexibleWild(record, event) {
+    if (!record || record.mode !== 'coop_wild' || !event
+        || event.t !== 'run' || event.amount !== 1) return false;
+    const departed = (record.sim.bySide.a || [])
+      .find((fighter) => fighter.slot === event.slot);
+    const clientId = departed && departed.playerId;
+    const client = clientId && this.clients.get(clientId);
+    if (!clientId || !client || !record.eligibleIds.has(clientId)) return false;
+    const survivor = (record.sim.bySide.a || [])
+      .find((fighter) => fighter.playerId !== clientId
+        && fighter.present !== false && this.clients.get(fighter.playerId));
+    const owner = survivor && this.clients.get(survivor.playerId);
+    const encounter = record.encounterOffer;
+    if (!owner || !owner.ready || !encounter || !encounter.battle) return false;
+
+    record.memberIds = record.memberIds.filter((id) => id !== clientId);
+    const group = this.coopBattles.get(record.id);
+    if (group) group.members = group.members.filter((id) => id !== clientId);
+    client.battleId = null;
+    client.coopBattleId = null;
+    owner.coopOffer = {
+      battle: encounter.battle, label: encounter.label, map: encounter.map,
+      mode: 'coop_wild', plan: record.id, startedAt: this.now(),
+    };
+    this.send(client, 'mmo.coop_offer', {
+      from: owner.id, name: owner.name, battle: encounter.battle,
+      label: encounter.label, map: encounter.map, mode: 'coop_wild',
+    });
+    return true;
+  }
+
   sendLateBattleField(record, client) {
     const base = record && record.packedField;
     const party = record && record.packedParties.get(client.id);
@@ -2682,19 +2715,20 @@ class Relay {
     return true;
   }
 
-  battleReadyPayload(record, extraId) {
+  battleReadyPayload(record, extraId, catchup = false) {
     const a = [];
     for (const id of record.sides.a || []) if (!a.includes(id)) a.push(id);
     if (extraId && !a.includes(extraId)) a.push(extraId);
     const b = (record.sides.b || []).slice();
     if (!a.length && record.hostId) a.push(record.hostId);
     if (!b.length && record.hostId) b.push(record.hostId);
-    return { battle: record.id, mode: record.mode, sides: { a, b } };
+    return { battle: record.id, mode: record.mode, sides: { a, b },
+      catchup: catchup ? true : undefined };
   }
 
   sendBattleCatchup(record, client) {
     if (!record || !client || record.historyComplete === false) return false;
-    this.send(client, 'mmo.battle_ready', this.battleReadyPayload(record, client.id));
+    this.send(client, 'mmo.battle_ready', this.battleReadyPayload(record, client.id, true));
     for (const event of record.history || []) this.send(client, 'mmo.battle_event', event);
     return true;
   }
@@ -3006,6 +3040,7 @@ class Relay {
       this.syncBagsFromSim(record);
     }
     const events = record.sim.drainEvents();
+    const departures = [];
     for (const event of events) {
       if (record.historyComplete !== false) {
         if (record.history.length >= BATTLE_HISTORY_MAX) {
@@ -3017,7 +3052,9 @@ class Relay {
         }
       }
       this.broadcastBattle(record, 'mmo.battle_event', event);
+      if (event.t === 'run' && event.amount === 1) departures.push(event);
     }
+    for (const event of departures) this.reofferFlexibleWild(record, event);
     const outcome = record.sim.outcome();
     if (outcome) this.settleMediated(record, outcome);
   }

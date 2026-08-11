@@ -2175,7 +2175,7 @@ function M:onBattleOver(result, game, state, toLearn)
   -- server accumulated one dead group per battle ever fought, each still
   -- routing traffic to players who had walked away. The hub closes the whole
   -- group on one goodbye, because a co-op battle ends for everybody at once.
-  if plan and plan.id then
+  if plan and plan.id and not (state and state.individualRun) then
     self.transport:send(Wire.COOP_LEAVE, {})
   end
 

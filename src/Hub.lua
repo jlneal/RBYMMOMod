@@ -1445,6 +1445,51 @@ function M:announceBattleSeat(record, clientId)
   return true
 end
 
+-- An `amount=1` run is a single human leaving a flexible Wild fight while an
+-- ally keeps it alive. Stop streaming to that client, clear their busy
+-- presence, and make the surviving ally the owner of a fresh JOIN offer. The
+-- original encounter identity is retained on the record, so rejoining goes
+-- through the exact same catch-up/admission path as a first late join.
+function M:reofferFlexibleWild(record, event)
+  if not (record and record.mode == "coop_wild" and event
+      and event.t == "run" and event.amount == 1) then return false end
+  local departed
+  for _, fighter in ipairs((record.sim.bySide or {}).a or {}) do
+    if fighter.slot == event.slot then departed = fighter; break end
+  end
+  local clientId = departed and departed.playerId
+  local client = clientId and self.clients[clientId]
+  if not (clientId and client and record.eligibleIds[clientId]) then return false end
+
+  local owner
+  for _, fighter in ipairs((record.sim.bySide or {}).a or {}) do
+    if fighter.playerId ~= clientId and fighter.present ~= false then
+      local candidate = self.clients[fighter.playerId]
+      if candidate and candidate.ready then owner = candidate; break end
+    end
+  end
+  local encounter = record.encounterOffer
+  if not (owner and encounter and encounter.battle) then return false end
+
+  local function removeId(list, id)
+    for i = #list, 1, -1 do
+      if list[i] == id then table.remove(list, i) end
+    end
+  end
+  removeId(record.memberIds, clientId)
+  local group = self.coopBattles[record.id]
+  if group then removeId(group.members, clientId) end
+  client.battleId, client.coopBattleId = nil, nil
+
+  owner.coopOffer = { battle = encounter.battle, label = encounter.label,
+    map = encounter.map, mode = "coop_wild", plan = record.id,
+    startedAt = self.clock }
+  send(client, Wire.COOP_OFFER, { from = owner.id, name = owner.name,
+    battle = encounter.battle, label = encounter.label,
+    map = encounter.map, mode = "coop_wild" })
+  return true
+end
+
 function M:sendLateBattleField(record, client)
   local base = record and record.packedField
   local party = record and record.packedParties[client.id]
@@ -1463,7 +1508,7 @@ function M:sendLateBattleField(record, client)
   return true
 end
 
-function M:battleReadyPayload(record, extraId)
+function M:battleReadyPayload(record, extraId, catchup)
   local a, seen = {}, {}
   for _, id in ipairs(record.sides.a or {}) do
     if not seen[id] then seen[id] = true; a[#a + 1] = id end
@@ -1473,12 +1518,13 @@ function M:battleReadyPayload(record, extraId)
   for _, id in ipairs(record.sides.b or {}) do b[#b + 1] = id end
   if #a == 0 and record.hostId then a[1] = record.hostId end
   if #b == 0 and record.hostId then b[1] = record.hostId end
-  return { battle = record.id, mode = record.mode, sides = { a = a, b = b } }
+  return { battle = record.id, mode = record.mode, sides = { a = a, b = b },
+    catchup = catchup == true or nil }
 end
 
 function M:sendBattleCatchup(record, client)
   if not (record and client and record.historyComplete ~= false) then return false end
-  send(client, Wire.BATTLE_READY, self:battleReadyPayload(record, client.id))
+  send(client, Wire.BATTLE_READY, self:battleReadyPayload(record, client.id, true))
   for _, event in ipairs(record.history or {}) do send(client, Wire.BATTLE_EVENT, event) end
   return true
 end
@@ -1805,6 +1851,7 @@ function M:flushBattle(record)
   if record.sim.phase ~= "choice" then
     self:syncBagsFromSim(record)
   end
+  local departures = {}
   for _, event in ipairs(record.sim:drainEvents()) do
     if record.historyComplete ~= false then
       if #record.history >= Config.BATTLE_HISTORY_MAX then
@@ -1816,7 +1863,11 @@ function M:flushBattle(record)
       end
     end
     self:broadcastBattle(record, Wire.BATTLE_EVENT, event)
+    if event.t == "run" and event.amount == 1 then
+      departures[#departures + 1] = event
+    end
   end
+  for _, event in ipairs(departures) do self:reofferFlexibleWild(record, event) end
   local outcome = record.sim:outcome()
   if outcome then self:settleMediated(record, outcome) end
 end
@@ -2603,10 +2654,12 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
   -- keeps the trainer WAIT/JOIN invite path.
   local mode = Wire.coopOfferMode(msg.mode)
   if mode == "coop_wild" and not self.wildCoopEnabled then return end
+  local label = Wire.label(msg.label)
+  local map = Wire.mapId(msg.map)
   client.coopOffer = {
     battle = battle,
-    label = Wire.label(msg.label),
-    map = Wire.mapId(msg.map),
+    label = label,
+    map = map,
     mode = mode,
     -- Stamped so the sweep can expire it on the same clock the partner's
     -- client already uses; without one the two ends disagreed about whether
@@ -2625,6 +2678,10 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
       mode = "coop_wild", hostId = client.id,
       eligibleIds = eligible,
     })
+    local record = self.battles[id]
+    if record then
+      record.encounterOffer = { battle = battle, label = label, map = map }
+    end
     send(client, Wire.COOP_JOINED, {
       id = client.id, name = client.name, plan = id, immediate = true,
     })

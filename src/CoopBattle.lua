@@ -5273,6 +5273,7 @@ function M:onBattleReady(msg)
   if self.mediated then
     if not (self.battleId and msg.battle == self.battleId and self.sim) then return false end
     self.medSlots, self.medFields = self:medMap(msg.sides)
+    self.medHydrating = msg.catchup == true
     return true
   end
   if self.result then return false end
@@ -5280,6 +5281,7 @@ function M:onBattleReady(msg)
   if not (self.sim and M.mediates(self.mode)) then return false end
 
   self.mediated = true
+  self.medHydrating = msg.catchup == true
   self.medSlots, self.medFields = self:medMap(msg.sides)
 
   -- Everything the client-simulated path had in flight belongs to a turn that is
@@ -5298,7 +5300,10 @@ end
 function M:onBattleSeat(msg)
   if not (self.battleId and msg.battle == self.battleId and self.sim) then return false end
   for _, slot in ipairs(self.sim.slots or {}) do
-    if slot.owner == msg.playerId then return true end
+    if slot.owner == msg.playerId then
+      if not slot.battler then self.sim:sendOut(slot, slot.active) end
+      return true
+    end
   end
   local party = {}
   for _, sheet in ipairs(msg.mons or {}) do
@@ -5485,6 +5490,21 @@ function M:onBattleEvent(msg)
     self.medGaps = self.medGaps + 1
   end
   self.medSeq = msg.seq
+
+  -- `amount=1` is the referee's explicit "this human left but the Wild fight
+  -- continues" marker. Remove the battler on every viewer; on the departing
+  -- client, close only this screen after the turn's narration drains. The
+  -- ordinary unmarked run still belongs to a battle-ending concession and is
+  -- resolved by mmo.battle_outcome.
+  if msg.t == "run" and msg.amount == 1 then
+    local index = self:medSlotOf(msg)
+    local slot = index and self.sim:slot(index)
+    if slot then slot.battler = nil end
+    if index == self.mine and self.mode == "coop_wild" and not self.medHydrating then
+      self.individualRun = true
+      self.result = "run"
+    end
+  end
 
   -- A peer answered this turn. Applied now, not batched with narration: the
   -- wait line has to drop their name the moment the hub accepts the choice,

@@ -428,6 +428,7 @@ function testFlexibleWildAdmissionBoundary() {
       { side: 'b', name: 'WILD', party: [{ species: 'WILD' }] },
     ],
   };
+  record.encounterOffer = { battle: 'ROUTE_1|WILD', map: 'ROUTE_1' };
   record.packedParties.set(b.id, [{ species: 'JOINER' }]);
   b.peer.outbox = [];
   ok(relay.sendLateBattleField(record, relay.get(b.id)),
@@ -439,6 +440,8 @@ function testFlexibleWildAdmissionBoundary() {
   ok(relay.sendBattleCatchup(record, relay.get(b.id)),
     'the entrant receives a replay baseline');
   ok(b.peer.outbox[0].type === 'mmo.battle_ready', 'ready precedes replayed events');
+  ok(b.peer.outbox[0].catchup === true,
+    'the replay baseline suppresses historical self-departure');
   ok(b.peer.outbox.length - 1 === record.history.length,
     'the complete retained history follows ready');
   b.peer.outbox = [];
@@ -465,6 +468,22 @@ function testFlexibleWildAdmissionBoundary() {
     'the entrant receives the same admission boundary');
   ok(b.peer.outbox[1].type === 'mmo.battle_ready',
     'the entrant remaps its hydrated screen before live events');
+
+  a.peer.outbox = [];
+  b.peer.outbox = [];
+  ok(record.sim.submitChoice(b.id, { action: 'run' }),
+    'the late ally may independently choose to flee');
+  ok(record.sim.submitChoice(a.id, { action: 'fight', move: 0 }),
+    'the survivor answers the same turn');
+  ok(record.sim.autoPick(record.npcIds[0]), 'the Wild closes the flee turn');
+  relay.flushBattle(record);
+  ok(record.sim.byId.get(b.id).present === false,
+    'independent flee vacates only that stable seat');
+  ok(relay.get(b.id).coopBattleId === null, 'the runner is no longer presence-busy');
+  ok(relay.get(a.id).coopOffer.plan === record.id, 'the survivor owns a rejoin offer');
+  const reoffer = take(b, 'mmo.coop_offer');
+  ok(reoffer && reoffer.battle === 'ROUTE_1|WILD',
+    'the runner can explicitly rejoin the same encounter');
 }
 
 function testFlexibleWildBootstrapCapture() {

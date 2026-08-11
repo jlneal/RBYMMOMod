@@ -1091,6 +1091,46 @@ do
 end
 
 -- ------------------------------------------------------------------
+-- 7b. flexible Wild departure is local, visible, and reversible
+-- ------------------------------------------------------------------
+
+do
+  local slots = {
+    { side = "a", owner = "ann", name = "ANN", party = { mon(60, 40) } },
+    { side = "a", owner = "bob", name = "BOB", party = { mon(60, 30) } },
+    { side = "b", name = "WILD", party = { mon(60, 20) } },
+  }
+  local sides = { a = { "ann", "bob" }, b = { "ann" } }
+  local host = screen({ slots = slots, mine = 1, mode = "coop_wild", selfId = "ann" })
+  local runner = screen({ slots = slots, mine = 2, mode = "coop_wild", selfId = "bob" })
+  host:onBattleReady({ battle = "cb1", mode = "coop_wild", sides = sides })
+  runner:onBattleReady({ battle = "cb1", mode = "coop_wild", sides = sides })
+
+  host:onBattleEvent({ battle = "cb1", seq = 1, t = "run", slot = 1,
+    side = "a", text = "BOB", amount = 1 })
+  runner:onBattleEvent({ battle = "cb1", seq = 1, t = "run", slot = 1,
+    side = "a", text = "BOB", amount = 1 })
+  eq(host.sim:slot(2).battler, nil, "a departed ally disappears on the survivor's field")
+  eq(host.result, nil, "the survivor's battle remains live")
+  eq(runner.individualRun, true, "the departing screen records an individual flee")
+  eq(runner.result, "run", "and exits with a local run result")
+
+  local replay = screen({ slots = slots, mine = 2, mode = "coop_wild", selfId = "bob" })
+  replay:onBattleReady({ battle = "cb1", mode = "coop_wild", sides = sides,
+    catchup = true })
+  replay:onBattleEvent({ battle = "cb1", seq = 1, t = "run", slot = 1,
+    side = "a", text = "BOB", amount = 1 })
+  eq(replay.result, nil, "historical flee does not eject a hydrating rejoiner")
+  replay:onBattleReady({ battle = "cb1", mode = "coop_wild", sides = sides })
+  eq(replay.medHydrating, false, "the live boundary ends catch-up mode")
+
+  eq(host:onBattleSeat({ battle = "cb1", playerId = "bob", name = "BOB",
+    side = "a", mons = {} }), true,
+    "a retained seat can be made visible again without duplicating it")
+  check(host.sim:slot(2).battler ~= nil, "re-admission sends its active mon back out")
+end
+
+-- ------------------------------------------------------------------
 -- 8. which modes this build actually referees
 -- ------------------------------------------------------------------
 --

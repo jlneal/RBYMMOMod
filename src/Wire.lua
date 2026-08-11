@@ -1755,7 +1755,8 @@ function M.battleReady(raw)
   local a = idList(raw.sides.a, Config.COOP_SIDE)
   local b = idList(raw.sides.b, Config.COOP_SIDE)
   if not (a and b) then return nil end
-  return { battle = battle, mode = mode, sides = { a = a, b = b } }
+  return { battle = battle, mode = mode, sides = { a = a, b = b },
+    catchup = raw.catchup == true or nil }
 end
 
 return M

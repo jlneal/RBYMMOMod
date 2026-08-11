@@ -1007,7 +1007,8 @@ function cleanBattleReady(raw) {
   const a = cleanIdList(raw.sides.a, COOP_SIDE);
   const b = cleanIdList(raw.sides.b, COOP_SIDE);
   if (!a || !b) return null;
-  return { battle, mode, sides: { a, b } };
+  return { battle, mode, sides: { a, b },
+    catchup: raw.catchup === true ? true : undefined };
 }
 
 /*
