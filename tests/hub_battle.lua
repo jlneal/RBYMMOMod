@@ -193,7 +193,7 @@ end
 do
   local hub = Hub.new({ maxPlayers = 4 })
   local ann = join(hub, "ANN")
-  local bob = join(hub, "BOB")
+  local bob, bobPeer = join(hub, "BOB")
 
   hub:receive(ann, { type = Wire.REQUEST, to = bob.id, kind = "trade" })
   hub:receive(bob, { type = Wire.RESPOND, to = ann.id, kind = "trade", accept = true })
@@ -439,7 +439,7 @@ end
 do
   local hub = Hub.new({ maxPlayers = 4 })
   local ann, annPeer = join(hub, "ANN")
-  local bob = join(hub, "BOB")
+  local bob, bobPeer = join(hub, "BOB")
   hub:receive(ann, { type = Wire.REQUEST, to = bob.id, kind = "battle" })
   hub:receive(bob, { type = Wire.RESPOND, to = ann.id, kind = "battle", accept = true })
   local id = ann.sessionId
@@ -775,7 +775,7 @@ do
   local hub = Hub.new({ maxPlayers = 4 })
   hub.forceBattleSeed = 1
   local ann = join(hub, "ANN")
-  local bob = join(hub, "BOB")
+  local bob, bobPeer = join(hub, "BOB")
   local record = hub:openMediatedBattle("cw-flex", {
     mode = "coop_wild", hostId = ann.id, memberIds = { ann.id },
     eligibleIds = { ann.id, bob.id },
@@ -788,6 +788,23 @@ do
   })
   record.ruleset = { chart = CHART }
   ok(hub:tryStartSim(record), "a one-human flexible Wild sim starts immediately")
+  ok(#record.history > 0, "the hub retains the authoritative opening stream")
+  eq(record.history[#record.history].seq, record.sim.seq,
+    "retained history reaches the latest drained sequence")
+  record.packedField = { flexibleWild = true, slots = {
+    { side = "a", owner = ann.id, name = ann.name, party = { { species = "HOST" } } },
+    { side = "b", name = "WILD", party = { { species = "WILD" } } },
+  } }
+  record.packedParties[bob.id] = { { species = "JOINER" } }
+  bobPeer.outbox = {}
+  ok(hub:sendLateBattleField(record, bob), "the entrant receives an expanded packed field")
+  local fieldMsg = take(bobPeer, Wire.COOP_MSG)
+  eq(#fieldMsg.payload.field.slots, 3, "the expanded field adds exactly one ally slot")
+  bobPeer.outbox = {}
+  ok(hub:sendBattleCatchup(record, bob), "the entrant receives a replay baseline")
+  eq(bobPeer.outbox[1].type, Wire.BATTLE_READY, "ready precedes replayed events")
+  eq(#bobPeer.outbox - 1, #record.history, "the complete retained history follows ready")
+  bobPeer.outbox = {}
   record.sim:drainEvents()
   ok(record.sim:submitChoice(ann.id, { action = "fight", move = 0 }),
     "the host closes the prefilled opening turn")
@@ -797,10 +814,37 @@ do
     battle = "cw-flex", side = "a", mons = { mon({ species = "ALLY" }) },
   }) == false, "admission queues after a committed choice")
   ok(record.pendingAdmissions[bob.id], "the queued admission is retained")
+  ann.peer.outbox = {}
+  bobPeer.outbox = {}
   hub:flushBattle(record)
   eq(record.pendingAdmissions[bob.id], nil, "the next clean boundary admits it")
   eq(record.sides.a[2], bob.id, "the admitted player joins side a")
   eq(record.sim.byId[bob.id].slot, 1, "and receives the stable second field slot")
+  eq(ann.peer.outbox[1].type, Wire.BATTLE_SEAT,
+    "the existing screen learns the new engine party before admission events")
+  eq(ann.peer.outbox[2].type, Wire.BATTLE_READY,
+    "the refreshed mediated mapping follows the dynamic seat")
+  eq(bobPeer.outbox[1].type, Wire.BATTLE_SEAT,
+    "the entrant receives the same admission boundary")
+  eq(bobPeer.outbox[2].type, Wire.BATTLE_READY,
+    "the entrant remaps its hydrated screen before live events")
+end
+
+do
+  local hub = Hub.new({ maxPlayers = 4 })
+  local ann = join(hub, "ANN")
+  hub:openCoopBattle("cw-bootstrap", { ann.id }, {
+    mode = "coop_wild", hostId = ann.id, eligibleIds = { ann.id },
+  })
+  hub:receive(ann, { type = Wire.COOP_RELAY,
+    payload = { t = "party", mons = { { species = "PACKED" } } } })
+  hub:receive(ann, { type = Wire.COOP_RELAY,
+    payload = { t = "field", field = { slots = { { side = "a" } } } } })
+  local record = hub.battles["cw-bootstrap"]
+  eq(record.packedParties[ann.id][1].species, "PACKED",
+    "the embedded hub retains the engine-packed human bootstrap")
+  eq(record.packedField.slots[1].side, "a",
+    "and retains the host's packed initial field")
 end
 
 do

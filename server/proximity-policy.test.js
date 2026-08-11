@@ -3,8 +3,9 @@
 const assert = require('node:assert/strict');
 const { Relay, PROTOCOL } = require('./lib/relay');
 
-function pair(enabled) {
-  const relay = new Relay({ maxPlayers: 4, proximityJoinEnabled: enabled });
+function pair(enabled, offMapJoinEnabled = false, splitMaps = false) {
+  const relay = new Relay({ maxPlayers: 4, proximityJoinEnabled: enabled,
+    offMapJoinEnabled });
   const peers = [{ outbox: [] }, { outbox: [] }];
   const ids = peers.map((peer, index) => {
     peer.send = (message) => peer.outbox.push(message);
@@ -14,12 +15,35 @@ function pair(enabled) {
       type: 'mmo.hello', proto: PROTOCOL, name: index ? 'BLUE' : 'RED',
       playerId: index ? 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
         : 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      map: splitMaps && index ? 'ROUTE_1' : 'PALLET_TOWN',
     });
     return messages(peer, 'mmo.welcome')[0].id;
   });
   relay.parties.set('party', ids.slice());
   for (const id of ids) relay.clients.get(id).partyId = 'party';
   return { relay, peers, ids };
+}
+
+{
+  const { relay, peers, ids } = pair(true, false, true);
+  relay.handle(ids[0], {
+    type: 'mmo.coop_wait', battle: 'PALLET_TOWN|PIDGEY',
+    map: 'PALLET_TOWN', mode: 'coop_wild',
+  });
+  assert.equal(messages(peers[1], 'mmo.coop_offer').length, 0);
+  const plan = relay.get(ids[0]).coopOffer.plan;
+  assert.deepEqual(Array.from(relay.battles.get(plan).eligibleIds), [ids[0]]);
+}
+
+{
+  const { relay, peers, ids } = pair(true, true, true);
+  relay.handle(ids[0], {
+    type: 'mmo.coop_wait', battle: 'PALLET_TOWN|PIDGEY',
+    map: 'PALLET_TOWN', mode: 'coop_wild',
+  });
+  assert.equal(messages(peers[1], 'mmo.coop_offer').length, 1);
+  const plan = relay.get(ids[0]).coopOffer.plan;
+  assert.deepEqual(Array.from(relay.battles.get(plan).eligibleIds), ids);
 }
 
 function messages(peer, type) {
@@ -60,4 +84,4 @@ function messages(peer, type) {
   assert.equal(messages(peers[1], 'mmo.coop_offer').length, 0);
 }
 
-console.log('proximity policy relay: 8 passed');
+console.log('proximity policy relay: 12 passed');

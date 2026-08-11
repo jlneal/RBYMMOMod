@@ -118,6 +118,25 @@ function M.new(deps, slots)
   return self
 end
 
+function M:addSlot(raw)
+  if type(raw) ~= "table" or (raw.side ~= "a" and raw.side ~= "b")
+     or type(raw.party) ~= "table" or #raw.party == 0 then return nil end
+  if raw.owner then
+    for _, slot in ipairs(self.slots) do
+      if slot.owner == raw.owner then return slot end
+    end
+  end
+  local slot = {
+    index = #self.slots + 1, side = raw.side, owner = raw.owner,
+    name = raw.name or ("P" .. tostring(#self.slots + 1)),
+    party = raw.party, active = raw.active or 1,
+    bag = raw.bag, badges = raw.badges, battler = nil,
+  }
+  self.slots[#self.slots + 1] = slot
+  self:sendOut(slot, slot.active)
+  return slot
+end
+
 -- Build the battler for a slot's current mon.
 --
 -- Through the engine's own `BattleState.makeBattler` when one was handed in,

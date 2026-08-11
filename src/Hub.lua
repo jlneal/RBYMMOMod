@@ -1340,6 +1340,10 @@ function M:openMediatedBattle(id, plan)
     bagHold = {},      -- player id -> itemId held until turn resolves
     sim = nil,
     pendingAdmissions = {},
+    history = {},
+    historyComplete = true,
+    packedParties = {},
+    packedField = nil,
     settled = false,
   }
   for _, eligibleId in ipairs(plan.eligibleIds or memberIds) do
@@ -1378,7 +1382,7 @@ end
 -- attempts cannot replace it while waiting for the next clean boundary.
 function M:queueBattleAdmission(record, client, party)
   if not (record and client and party) or record.mode ~= "coop_wild"
-     or not record.sim or record.settled then return false end
+     or not record.sim or record.settled or record.historyComplete == false then return false end
   if not record.eligibleIds[client.id] then return false end
   if record.sim.byId[client.id] and record.sim.byId[client.id].present ~= false then
     return false
@@ -1398,6 +1402,7 @@ function M:applyBattleAdmissions(record)
   table.sort(ids)
   for _, clientId in ipairs(ids) do
     local fighter = self:battleFighter(record, clientId)
+    if fighter then self:announceBattleSeat(record, clientId) end
     if fighter and record.sim:admit("a", fighter) then
       record.pendingAdmissions[clientId] = nil
       local known = false
@@ -1414,10 +1419,68 @@ function M:applyBattleAdmissions(record)
         for _, id in ipairs(group.members) do if id == clientId then inGroup = true end end
         if not inGroup then group.members[#group.members + 1] = clientId end
       end
+      self:broadcastBattle(record, Wire.BATTLE_READY,
+        self:battleReadyPayload(record))
       return true
     end
   end
   return false
+end
+
+function M:announceBattleSeat(record, clientId)
+  local fighter = self:battleFighter(record, clientId)
+  local party = record and record.parties[clientId]
+  if not (fighter and party) then return false end
+  local payload = { battle = record.id, playerId = clientId,
+    name = fighter.name, side = "a", mons = party.mons, badges = party.badges }
+  local sent = {}
+  for _, memberId in ipairs(record.memberIds or {}) do
+    local member = self.clients[memberId]
+    if member and member.ready then send(member, Wire.BATTLE_SEAT, payload); sent[memberId] = true end
+  end
+  local entrant = self.clients[clientId]
+  if entrant and entrant.ready and not sent[clientId] then
+    send(entrant, Wire.BATTLE_SEAT, payload)
+  end
+  return true
+end
+
+function M:sendLateBattleField(record, client)
+  local base = record and record.packedField
+  local party = record and record.packedParties[client.id]
+  if not (base and party and client and record.historyComplete ~= false) then return false end
+  local field = {}
+  for key, value in pairs(base) do if key ~= "slots" then field[key] = value end end
+  field.flexibleWild = true
+  field.slots = {}
+  for _, slot in ipairs(base.slots or {}) do field.slots[#field.slots + 1] = slot end
+  field.slots[#field.slots + 1] = {
+    side = "a", owner = client.id, name = client.name, party = party,
+  }
+  send(client, Wire.COOP_MSG, {
+    from = record.hostId, payload = { t = "field", field = field },
+  })
+  return true
+end
+
+function M:battleReadyPayload(record, extraId)
+  local a, seen = {}, {}
+  for _, id in ipairs(record.sides.a or {}) do
+    if not seen[id] then seen[id] = true; a[#a + 1] = id end
+  end
+  if extraId and not seen[extraId] then a[#a + 1] = extraId end
+  local b = {}
+  for _, id in ipairs(record.sides.b or {}) do b[#b + 1] = id end
+  if #a == 0 and record.hostId then a[1] = record.hostId end
+  if #b == 0 and record.hostId then b[1] = record.hostId end
+  return { battle = record.id, mode = record.mode, sides = { a = a, b = b } }
+end
+
+function M:sendBattleCatchup(record, client)
+  if not (record and client and record.historyComplete ~= false) then return false end
+  send(client, Wire.BATTLE_READY, self:battleReadyPayload(record, client.id))
+  for _, event in ipairs(record.history or {}) do send(client, Wire.BATTLE_EVENT, event) end
+  return true
 end
 
 -- Is this seat one of the trainer's rather than a player's?
@@ -1743,6 +1806,15 @@ function M:flushBattle(record)
     self:syncBagsFromSim(record)
   end
   for _, event in ipairs(record.sim:drainEvents()) do
+    if record.historyComplete ~= false then
+      if #record.history >= Config.BATTLE_HISTORY_MAX then
+        record.history = {}
+        record.historyComplete = false
+        record.pendingAdmissions = {}
+      else
+        record.history[#record.history + 1] = event
+      end
+    end
     self:broadcastBattle(record, Wire.BATTLE_EVENT, event)
   end
   local outcome = record.sim:outcome()
@@ -2541,6 +2613,22 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
     -- the fight was still joinable.
     startedAt = self.clock,
   }
+  if mode == "coop_wild" then
+    local id = "c" .. tostring(self.nextCoopAsk)
+    self.nextCoopAsk = self.nextCoopAsk + 1
+    client.coopOffer.plan = id
+    local eligible = { client.id }
+    local partnerEligible = self.offMapJoinEnabled
+      or (map ~= nil and partner.map == map)
+    if partnerEligible then eligible[#eligible + 1] = partner.id end
+    self:openCoopBattle(id, { client.id }, {
+      mode = "coop_wild", hostId = client.id,
+      eligibleIds = eligible,
+    })
+    send(client, Wire.COOP_JOINED, {
+      id = client.id, name = client.name, plan = id, immediate = true,
+    })
+  end
   local offer = {
     from = client.id,
     name = client.name,
@@ -2549,7 +2637,10 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
     map = client.coopOffer.map,
   }
   if mode then offer.mode = mode end
-  send(partner, Wire.COOP_OFFER, offer)
+  if mode ~= "coop_wild" or self.offMapJoinEnabled
+      or (map ~= nil and partner.map == map) then
+    send(partner, Wire.COOP_OFFER, offer)
+  end
 end
 
 handlers[Wire.COOP_CANCEL] = function(self, client, msg)
@@ -2594,6 +2685,29 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
     return
   end
   if offer.mode == "coop_wild" and not self.wildCoopEnabled then return end
+
+  if offer.mode == "coop_wild" and offer.plan then
+    local record = self.battles[offer.plan]
+    if not (record and record.sim and record.historyComplete ~= false) then
+      send(client, Wire.COOP_OFFER_END, { reason = "alone" })
+      return
+    end
+    host.coopOffer = nil
+    client.coopOffer = nil
+    client.coopBattleId = record.id
+    client.battleId = record.id
+    local members = {}
+    for _, member in ipairs(self:partyMembers(client.partyId)) do
+      members[#members + 1] = { id = member.id, name = member.name }
+    end
+    send(host, Wire.COOP_JOINED,
+      { id = client.id, name = client.name, plan = record.id, late = true })
+    send(client, Wire.COOP_BATTLE, {
+      id = record.id, side = "a", allies = members, battle = battle,
+      host = host.id, mode = "coop_wild", late = true,
+    })
+    return
+  end
 
   -- Taken off the table before either side is told, so a second join racing
   -- this one finds nothing to accept rather than starting the fight twice.
@@ -2664,14 +2778,27 @@ handlers[Wire.COOP_RELAY] = function(self, client, msg)
   -- no longer: the moment an intermediator owns the rolls, a second set of
   -- them fanned out from a client is the desync it looks like.
   local mediated = self.battles[client.coopBattleId]
+  if not Wire.payloadOk(msg.payload) then
+    return noteDrop(self, client, "the co-op payload is not a shape we forward")
+  end
+  -- Keep the engine-packed bootstrap separately from the richer BattleSim
+  -- sheet. A late client needs the former to construct engine monsters, then
+  -- replays the latter's authoritative event history to catch up.
+  if mediated and type(msg.payload) == "table" then
+    if msg.payload.t == "party" and type(msg.payload.mons) == "table" then
+      mediated.packedParties[client.id] = msg.payload.mons
+      if mediated.sim and mediated.eligibleIds[client.id] then
+        self:sendLateBattleField(mediated, client)
+      end
+    elseif msg.payload.t == "field" and client.id == mediated.hostId then
+      mediated.packedField = msg.payload.field
+    end
+  end
   if mediated and mediated.sim then
     return noteDrop(self, client,
       "this co-op battle is mediated -- the battle_* types are the way in")
   end
 
-  if not Wire.payloadOk(msg.payload) then
-    return noteDrop(self, client, "the co-op payload is not a shape we forward")
-  end
   local group = self.coopBattles[client.coopBattleId]
   for _, memberId in ipairs((group and group.members) or {}) do
     if memberId ~= client.id then
@@ -2812,7 +2939,7 @@ end
 -- sender's own -- and the fight opens on the message that completes the set.
 handlers[Wire.BATTLE_PARTY] = function(self, client, msg)
   local record = mediatedOf(self, client)
-  if not record or record.sim then return end
+  if not record then return end
 
   local party = Wire.battleParty(msg)
   if not party then
@@ -2822,6 +2949,15 @@ handlers[Wire.BATTLE_PARTY] = function(self, client, msg)
   -- another fight is not a party that was mis-addressed, it is a sheet whose
   -- sender believes it is being used somewhere else.
   if party.battle ~= record.id then return end
+
+  if record.sim then
+    if record.mode ~= "coop_wild" or party.side ~= "a"
+       or not record.eligibleIds[client.id] then return end
+    if not self:sendBattleCatchup(record, client) then return end
+    self:queueBattleAdmission(record, client, party)
+    self:flushBattle(record)
+    return
+  end
 
   if not self:fillBattleParty(record, client, party) then return end
   self:tryStartSim(record)

@@ -116,7 +116,14 @@ M.MOD_ID = "rby_mmo"
 -- them anyway, so this is a semantic incompatibility rather than an optional
 -- display field. This number lives here and in server/lib/relay.js -- bump them
 -- together.
-M.PROTOCOL = 19
+--
+-- 20 makes Party vs Wild a live, joinable mediated encounter. The initiator
+-- begins before a second player accepts; the hub retains the packed field and
+-- authoritative event history, and a late entrant is hydrated before joining
+-- live fan-out. A protocol-19 client would interpret COOP_JOINED as the old
+-- fixed-roster start and wait forever for the second party, so refusal is the
+-- only safe mixed-version behavior.
+M.PROTOCOL = 20
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.
@@ -540,6 +547,10 @@ M.BATTLE_BAG_COUNT_MAX = 99
 -- into this list, so a party that carried more would be a party with slots no
 -- mmo.battle_choice can reach and no screen has a button for.
 M.BATTLE_MOVE_MAX = 4
+-- Ordered mediated events retained while a flexible Wild offer is joinable.
+-- Crossing the ceiling disables late admission for that encounter rather than
+-- keeping an unbounded replay log or hydrating a client from a partial story.
+M.BATTLE_HISTORY_MAX = 8192
 
 -- The widest type chart an ephemeral ruleset may upload.
 --

@@ -5270,7 +5270,12 @@ end
 -- which side every slot is on, agreed by all four clients before anybody
 -- uploaded anything.
 function M:onBattleReady(msg)
-  if self.mediated or self.result then return false end
+  if self.mediated then
+    if not (self.battleId and msg.battle == self.battleId and self.sim) then return false end
+    self.medSlots, self.medFields = self:medMap(msg.sides)
+    return true
+  end
+  if self.result then return false end
   if not (self.battleId and msg.battle == self.battleId) then return false end
   if not (self.sim and M.mediates(self.mode)) then return false end
 
@@ -5288,6 +5293,22 @@ function M:onBattleReady(msg)
   self.turnOpened = nil
   self.runAsk = nil
   return true
+end
+
+function M:onBattleSeat(msg)
+  if not (self.battleId and msg.battle == self.battleId and self.sim) then return false end
+  for _, slot in ipairs(self.sim.slots or {}) do
+    if slot.owner == msg.playerId then return true end
+  end
+  local party = {}
+  for _, sheet in ipairs(msg.mons or {}) do
+    local mon = M.monFromCaughtSheet(self.game, sheet)
+    if not mon then return false end
+    party[#party + 1] = mon
+  end
+  if #party == 0 then return false end
+  return self.sim:addSlot({ side = msg.side, owner = msg.playerId,
+    name = msg.name, party = party, badges = msg.badges }) ~= nil
 end
 
 -- ------- 3. the event stream

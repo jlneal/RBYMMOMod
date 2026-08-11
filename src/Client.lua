@@ -96,6 +96,8 @@ end, function()
   return World.current()
 end, function()
   return sessionWildCoopEnabled
+end, function()
+  return sessionOffMapJoinEnabled
 end)
 -- Co-op can be mid-handoff with no screen yet (running/state set, stack
 -- still overworld). Sessions asks this so a 1v1 invite is refused there
@@ -1927,6 +1929,9 @@ end
 handlers[Wire.BATTLE_READY] = function(_, msg)
   sessions:onBattleReady(msg)
   coop:onBattleReady(msg)
+end
+handlers[Wire.BATTLE_SEAT] = function(_, msg)
+  coop:onBattleSeat(msg)
 end
 handlers[Wire.BATTLE_EVENT] = function(_, msg)
   sessions:onBattleEvent(msg)

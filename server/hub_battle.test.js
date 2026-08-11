@@ -418,6 +418,30 @@ function testFlexibleWildAdmissionBoundary() {
   });
   record.ruleset = { chart: [[100]] };
   ok(relay.tryStartSim(record), 'one-human flexible Wild starts immediately');
+  ok(record.history.length > 0, 'the hub retains the authoritative opening stream');
+  ok(record.history.at(-1).seq === record.sim.seq,
+    'retained history reaches the latest drained sequence');
+  record.packedField = {
+    flexibleWild: true,
+    slots: [
+      { side: 'a', owner: a.id, name: a.name, party: [{ species: 'HOST' }] },
+      { side: 'b', name: 'WILD', party: [{ species: 'WILD' }] },
+    ],
+  };
+  record.packedParties.set(b.id, [{ species: 'JOINER' }]);
+  b.peer.outbox = [];
+  ok(relay.sendLateBattleField(record, relay.get(b.id)),
+    'the entrant receives an expanded packed field');
+  const fieldMsg = take(b, 'mmo.coop_msg');
+  ok(fieldMsg.payload.field.slots.length === 3,
+    'the expanded field adds exactly one ally slot');
+  b.peer.outbox = [];
+  ok(relay.sendBattleCatchup(record, relay.get(b.id)),
+    'the entrant receives a replay baseline');
+  ok(b.peer.outbox[0].type === 'mmo.battle_ready', 'ready precedes replayed events');
+  ok(b.peer.outbox.length - 1 === record.history.length,
+    'the complete retained history follows ready');
+  b.peer.outbox = [];
   record.sim.drainEvents();
   ok(record.sim.submitChoice(a.id, { action: 'fight', move: 0 }),
     'the host closes the prefilled opening turn');
@@ -427,10 +451,40 @@ function testFlexibleWildAdmissionBoundary() {
     battle: 'cw-flex', side: 'a', mons: [mon(10)], bag: [],
   }) === false, 'late admission queues after a committed choice');
   ok(record.pendingAdmissions.has(b.id), 'the queued party is retained');
+  a.peer.outbox = [];
+  b.peer.outbox = [];
   relay.flushBattle(record);
   ok(!record.pendingAdmissions.has(b.id), 'the next clean boundary admits it');
   ok(record.sides.a[1] === b.id, 'the late player joins side a');
   ok(record.sim.byId.get(b.id).slot === 1, 'the stable second field slot is assigned');
+  ok(a.peer.outbox[0].type === 'mmo.battle_seat',
+    'the existing screen learns the new engine party before admission events');
+  ok(a.peer.outbox[1].type === 'mmo.battle_ready',
+    'the refreshed mediated mapping follows the dynamic seat');
+  ok(b.peer.outbox[0].type === 'mmo.battle_seat',
+    'the entrant receives the same admission boundary');
+  ok(b.peer.outbox[1].type === 'mmo.battle_ready',
+    'the entrant remaps its hydrated screen before live events');
+}
+
+function testFlexibleWildBootstrapCapture() {
+  const clock = makeClock();
+  const relay = makeRelay(clock);
+  const a = dial(relay, 'BOOT');
+  relay.openCoopBattle('cw-bootstrap', [a.id], {
+    mode: 'coop_wild', hostId: a.id, eligibleIds: [a.id],
+  });
+  relay.handle(a.id, {
+    type: 'mmo.coop_relay', payload: { t: 'party', mons: [{ species: 'PACKED' }] },
+  });
+  relay.handle(a.id, {
+    type: 'mmo.coop_relay', payload: { t: 'field', field: { slots: [{ side: 'a' }] } },
+  });
+  const record = relay.battles.get('cw-bootstrap');
+  ok(record.packedParties.get(a.id)[0].species === 'PACKED',
+    'the Node hub retains the engine-packed human bootstrap');
+  ok(record.packedField.slots[0].side === 'a',
+    "and retains the host's packed initial field");
 }
 
 function testCoopWildCatchCatcher() {
@@ -597,6 +651,7 @@ testDrawCarriesNoLists();
 testCoopNpcMediated();
 testCoopWildSeating();
 testFlexibleWildAdmissionBoundary();
+testFlexibleWildBootstrapCapture();
 testCoopWildCatchCatcher();
 testTradeRelayStillWorks();
 testBagProofs();

@@ -1197,6 +1197,24 @@ function cleanBattleReconnect(raw) {
   return { battle };
 }
 
+function cleanBattleSeat(raw) {
+  if (raw === null || typeof raw !== 'object') return null;
+  const battle = cleanId(raw.battle);
+  const playerId = cleanId(raw.playerId);
+  const name = cleanName(raw.name);
+  const side = cleanSide(raw.side);
+  if (!battle || !playerId || !name || !side || !Array.isArray(raw.mons)) return null;
+  const mons = [];
+  for (const entry of raw.mons) {
+    if (mons.length >= BATTLE_MON_MAX) return null;
+    const mon = cleanBattleMon(entry);
+    if (!mon) return null;
+    mons.push(mon);
+  }
+  if (!mons.length) return null;
+  return { battle, playerId, name, side, mons, badges: cleanBadgeSet(raw.badges) };
+}
+
 module.exports = {
   cleanText,
   cleanId,
@@ -1233,6 +1251,7 @@ module.exports = {
   cleanBattleEvent,
   cleanBattleOutcome,
   cleanBattleReconnect,
+  cleanBattleSeat,
   payloadOk,
   FACINGS,
   KINDS,

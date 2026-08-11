@@ -58,7 +58,7 @@ M.__index = M
 
 function M.new(transport, ui, party, roster, chat, coopExpEnabled,
                coopMoneyEnabled, proximityJoinEnabled, autoJoinRange,
-               currentPosition, wildCoopEnabled)
+               currentPosition, wildCoopEnabled, offMapJoinEnabled)
   return setmetatable({
     transport = transport,
     ui = ui,
@@ -78,6 +78,8 @@ function M.new(transport, ui, party, roster, chat, coopExpEnabled,
       or function() return nil end,
     wildCoopEnabled = type(wildCoopEnabled) == "function" and wildCoopEnabled
       or function() return true end,
+    offMapJoinEnabled = type(offMapJoinEnabled) == "function" and offMapJoinEnabled
+      or function() return Config.DEFAULT_OFF_MAP_JOIN_ENABLED end,
     -- our own standing offer: { battle, label, map, start }
     waiting = nil,
     -- the partner's, as it arrived: { from, name, battle, label, map, clock }
@@ -129,6 +131,10 @@ end
 
 function M:wildCoopAllowed()
   return self.wildCoopEnabled() == true
+end
+
+function M:offMapJoinAllowed()
+  return self.offMapJoinEnabled() == true
 end
 
 function M:configuredAutoJoinRange()
@@ -626,7 +632,8 @@ end
 
 -- Called when the engine has just pushed a wild encounter.
 --
--- Divert only when partied, the partner is roster-online on *this* map, and
+-- Divert only when partied, the partner is roster-online and eligible under
+-- the host's map policy, and
 -- neither side is busy. Busy here is: we are already mid-co-op / mid-ask /
 -- mid-wait, another fight is already on the stack (excluding this just-pushed
 -- wild), or their presence says session-busy. Otherwise return false and leave
@@ -661,9 +668,10 @@ function M:onWildEncounter(game, state, mapId)
     end
     return self:autoJoinWild(offer)
   end
-  if not self:partnerOnMap(mapId) then return false end
   local partner = self.party:partner()
   local row = partner and self.roster:get(partner.id)
+  if not row then return false end
+  if not self:partnerOnMap(mapId) and not self:offMapJoinAllowed() then return false end
   if row and row.busy then return false end
   if self:inFightExcept(game, state) then return false end
 
@@ -1371,6 +1379,11 @@ end
 -- Our offer was taken.  This is the message that ends the waiting, and the
 -- only one that does.
 function M:onJoined(game, msg)
+  if msg and msg.late == true then
+    -- The live host is already fighting; this notification is informational.
+    self:note((Wire.name(msg.name) or "Your friend") .. " joined the fight.")
+    return true
+  end
   local waiting = self.waiting
   if not waiting then return end
   local name = Wire.name(msg and msg.name) or self.party:partnerName()
@@ -1380,6 +1393,13 @@ function M:onJoined(game, msg)
   -- to name and the fight stays on host CoopSim under PROTOCOL 10.
   local planId = Wire.id(msg and msg.plan)
   local wild = waiting.kind == "wild" or waiting.mode == "coop_wild"
+  local allies = self.party:list()
+  if msg and msg.immediate == true then
+    allies = {}
+    for _, member in ipairs(self.party:list()) do
+      if self.party:isSelf(member.id) then allies[1] = member break end
+    end
+  end
   self.waiting = nil
   self:note(("%s joined the fight."):format(name))
   self:begin(game, {
@@ -1391,11 +1411,12 @@ function M:onJoined(game, msg)
     engine = waiting.engine,
     trainer = waiting.trainer,
     wildCatchMon = waiting.wildCatchMon or M.wildMonOf(waiting.engine),
-    allies = self.party:list(),
+    allies = allies,
     -- The player who was waiting is the one standing at the encounter, so they
     -- are the one that simulates.
     host = true,
     hostId = self.party.selfId,
+    flexibleWild = msg and msg.immediate == true or false,
   })
 end
 
@@ -1689,6 +1710,14 @@ function M:onBattleEvent(msg)
   if event and self.state then self.state:onBattleEvent(event) end
 end
 
+function M:onBattleSeat(msg)
+  local seat = Wire.battleSeatUpdate(msg)
+  if seat and self.state and self.state.onBattleSeat then
+    return self.state:onBattleSeat(seat)
+  end
+  return false
+end
+
 function M:onBattleOutcome(msg)
   local outcome = Wire.battleOutcome(msg)
   if outcome and self.state then self.state:onBattleOutcome(outcome) end
@@ -1800,7 +1829,8 @@ function M:buildField(game, battle, humans)
   -- Three is a full fight when the trainer only brought one monster (two
   -- players + one NPC seat); four is the usual 2v2. Anything else is a plan
   -- that did not assemble into a co-op field.
-  if #slots < 3 or #slots > Config.COOP_FIGHTERS then
+  local floor = plan.flexibleWild and 2 or 3
+  if #slots < floor or #slots > Config.COOP_FIGHTERS then
     return nil, "That battle can't\nbe started."
   end
 
@@ -1855,6 +1885,7 @@ function M:buildField(game, battle, humans)
     -- so every client applies the same answer.
     rewardExp = (not versusPlayers) and self:coopExpAllowed() or false,
     rewardMoney = (not versusPlayers) and self:coopMoneyAllowed() or false,
+    flexibleWild = plan.flexibleWild == true,
   }
 end
 

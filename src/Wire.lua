@@ -297,6 +297,9 @@ M.BATTLE_OUTCOME   = "mmo.battle_outcome"
 -- connection it is arriving on may be a new one, so the intermediator cannot
 -- read which fight this is off a socket it has only just met.
 M.BATTLE_RECONNECT = "mmo.battle_reconnect"
+-- A late fighter's retained party sheet, sent before the refreshed READY and
+-- live admission events so existing screens can add the stable visual slot.
+M.BATTLE_SEAT      = "mmo.battle_seat"
 
 M.FACINGS = { up = true, down = true, left = true, right = true }
 M.KINDS = { trade = true, battle = true }
@@ -766,7 +769,9 @@ function M.coopField(raw)
   -- Floor is three: a co-op party needs two humans, and an NPC fight needs at
   -- least one foe seat. Cap is the full four-fighter field (two parties, or a
   -- trainer with enough monsters to fill both foe seats).
-  if n < 3 or n > Config.COOP_FIGHTERS then return nil end
+  local flexibleWild = raw.flexibleWild == true
+  local floor = flexibleWild and 2 or 3
+  if n < floor or n > Config.COOP_FIGHTERS then return nil end
 
   local slots = {}
   for i = 1, n do
@@ -804,7 +809,8 @@ function M.coopField(raw)
   return { slots = slots, host = M.id(raw.host),
            trainer = M.id(raw.trainer),
            rewardExp = raw.rewardExp ~= false,
-           rewardMoney = raw.rewardMoney ~= false }
+           rewardMoney = raw.rewardMoney ~= false,
+           flexibleWild = flexibleWild }
 end
 
 function M.battleKey(value)
@@ -1684,6 +1690,26 @@ function M.battleReconnect(raw)
   local battle = M.id(raw.battle)
   if not battle then return nil end
   return { battle = battle }
+end
+
+function M.battleSeatUpdate(raw)
+  if type(raw) ~= "table" then return nil end
+  local battle = M.id(raw.battle)
+  local playerId = M.id(raw.playerId)
+  local name = M.name(raw.name)
+  local side = M.side(raw.side)
+  if not (battle and playerId and name and side) then return nil end
+  if type(raw.mons) ~= "table" then return nil end
+  local mons = {}
+  for _, entry in ipairs(raw.mons) do
+    if #mons >= Config.BATTLE_MON_MAX then return nil end
+    local mon = M.battleMon(entry)
+    if not mon then return nil end
+    mons[#mons + 1] = mon
+  end
+  if #mons == 0 then return nil end
+  return { battle = battle, playerId = playerId, name = name, side = side,
+    mons = mons, badges = M.badges(raw.badges) }
 end
 
 -- The shapes a mediated fight comes in.

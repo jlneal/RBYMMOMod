@@ -112,7 +112,10 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // client can send something a hub silently ignores. Kept in step with
 // Config.PROTOCOL on the mod side. 19 adds host-owned co-op gameplay policy;
 // a protocol-18 client would ignore disabled rewards or automatic-join policy.
-const PROTOCOL = 19;
+// 20 makes Party vs Wild live before a second player joins and adds packed-
+// field plus authoritative-history hydration; a protocol-19 client would wait
+// forever under the old fixed-roster COOP_JOINED meaning.
+const PROTOCOL = 20;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right
@@ -148,6 +151,7 @@ const RESPONSE_MAX = 128;
 const BATTLE_CHOICE_TIMEOUT = 60;
 const BATTLE_RECONNECT_GRACE = 60;
 const BATTLE_RESOLVE_TIMEOUT = 30;
+const BATTLE_HISTORY_MAX = 8192;
 
 // How many fighters one side of a co-op field holds, which is Config.COOP_SIDE
 // and is written as PARTY_MAX for that file's reason: two parties meet, so the
@@ -761,9 +765,26 @@ handlers['mmo.coop_wait'] = (relay, client, msg) => {
   // startedAt so the sweep can expire it on the same clock the partner's
   // client already uses. Mirrors src/Hub.lua.
   client.coopOffer = { battle, label, map, mode, startedAt: relay.now() };
+  if (mode === 'coop_wild') {
+    const battleId = `c${relay.nextCoopAsk++}`;
+    client.coopOffer.plan = battleId;
+    const partnerEligible = relay.offMapJoinEnabled
+      || (map !== null && partner.map === map);
+    const eligibleIds = partnerEligible ? [client.id, partner.id] : [client.id];
+    relay.openCoopBattle(battleId, [client.id], {
+      mode: 'coop_wild', hostId: client.id,
+      eligibleIds,
+    });
+    relay.send(client, 'mmo.coop_joined', {
+      id: client.id, name: client.name, plan: battleId, immediate: true,
+    });
+  }
   const offer = { from: client.id, name: client.name, battle, label, map };
   if (mode) offer.mode = mode;
-  relay.send(partner, 'mmo.coop_offer', offer);
+  if (mode !== 'coop_wild' || relay.offMapJoinEnabled
+      || (map !== null && partner.map === map)) {
+    relay.send(partner, 'mmo.coop_offer', offer);
+  }
 };
 
 handlers['mmo.coop_cancel'] = (relay, client, msg) => {
@@ -809,6 +830,28 @@ handlers['mmo.coop_join'] = (relay, client, msg) => {
     return;
   }
   if (offer.mode === 'coop_wild' && !relay.wildCoopEnabled) return;
+
+  if (offer.mode === 'coop_wild' && offer.plan) {
+    const record = relay.battles.get(offer.plan);
+    if (!record || !record.sim || record.historyComplete === false) {
+      relay.send(client, 'mmo.coop_offer_end', { reason: 'alone' });
+      return;
+    }
+    host.coopOffer = null;
+    client.coopOffer = null;
+    client.coopBattleId = record.id;
+    client.battleId = record.id;
+    const liveMembers = relay.partyMembers(client.partyId)
+      .map((m) => ({ id: m.id, name: m.name }));
+    relay.send(host, 'mmo.coop_joined', {
+      id: client.id, name: client.name, plan: record.id, late: true,
+    });
+    relay.send(client, 'mmo.coop_battle', {
+      id: record.id, side: 'a', allies: liveMembers, battle,
+      host: host.id, mode: 'coop_wild', late: true,
+    });
+    return;
+  }
 
   // Taken off the table before either side is told, so a second join racing
   // this one finds nothing to accept rather than starting the fight twice.
@@ -874,14 +917,26 @@ handlers['mmo.coop_relay'] = (relay, client, msg) => {
    * second set of them fanned out from a client is the desync it looks like.
    */
   const mediated = relay.battles.get(client.coopBattleId);
+  if (!payloadOk(msg.payload)) {
+    return noteDrop(relay, client, 'the co-op payload is not a shape we forward');
+  }
+  if (mediated && msg.payload && typeof msg.payload === 'object') {
+    if (msg.payload.t === 'party' && Array.isArray(msg.payload.mons)) {
+      mediated.packedParties.set(client.id, msg.payload.mons);
+      if (mediated.sim && mediated.eligibleIds.has(client.id)) {
+        relay.sendLateBattleField(mediated, client);
+      }
+    } else if (msg.payload.t === 'field' && client.id === mediated.hostId) {
+      // coopField is already bounded by payloadOk on this internal bootstrap;
+      // the client runs the stricter field sanitizer before constructing it.
+      mediated.packedField = msg.payload.field;
+    }
+  }
   if (mediated && mediated.sim) {
     return noteDrop(relay, client,
       'this co-op battle is mediated -- the battle_* types are the way in');
   }
 
-  if (!payloadOk(msg.payload)) {
-    return noteDrop(relay, client, 'the co-op payload is not a shape we forward');
-  }
   const group = relay.coopBattles.get(client.coopBattleId);
   for (const memberId of (group && group.members) || []) {
     if (memberId === client.id) continue;
@@ -1043,7 +1098,7 @@ handlers['mmo.battle_ruleset'] = (relay, client, msg) => {
 // sender's own -- and the fight opens on the message that completes the set.
 handlers['mmo.battle_party'] = (relay, client, msg) => {
   const record = mediatedOf(relay, client);
-  if (!record || record.sim) return;
+  if (!record) return;
 
   const party = cleanBattleParty(msg);
   if (!party) {
@@ -1053,6 +1108,15 @@ handlers['mmo.battle_party'] = (relay, client, msg) => {
   // another fight is not a party that was mis-addressed, it is a sheet its
   // sender believes is being used somewhere else.
   if (party.battle !== record.id) return;
+
+  if (record.sim) {
+    if (record.mode !== 'coop_wild' || party.side !== 'a'
+        || !record.eligibleIds.has(client.id)) return;
+    if (!relay.sendBattleCatchup(record, client)) return;
+    relay.queueBattleAdmission(record, client, party);
+    relay.flushBattle(record);
+    return;
+  }
 
   if (!relay.fillBattleParty(record, client, party)) return;
   relay.tryStartSim(record);
@@ -2510,6 +2574,10 @@ class Relay {
       bagHold: Object.create(null),
       sim: null,
       pendingAdmissions: new Set(),
+      history: [],
+      historyComplete: true,
+      packedParties: new Map(),
+      packedField: null,
       settled: false,
     };
     this.battles.set(id, record);
@@ -2541,7 +2609,7 @@ class Relay {
 
   queueBattleAdmission(record, client, party) {
     if (!record || !client || !party || record.mode !== 'coop_wild'
-        || !record.sim || record.settled) return false;
+        || !record.sim || record.settled || record.historyComplete === false) return false;
     if (!record.eligibleIds.has(client.id)) return false;
     const existing = record.sim.byId.get(client.id);
     if (existing && existing.present !== false) return false;
@@ -2558,6 +2626,7 @@ class Relay {
     const ids = Array.from(record.pendingAdmissions || []).sort();
     for (const clientId of ids) {
       const fighter = this.battleFighter(record, clientId);
+      if (fighter) this.announceBattleSeat(record, clientId);
       if (fighter && record.sim.admit('a', fighter)) {
         record.pendingAdmissions.delete(clientId);
         if (!record.memberIds.includes(clientId)) record.memberIds.push(clientId);
@@ -2569,10 +2638,65 @@ class Relay {
         }
         const group = this.coopBattles.get(record.id);
         if (group && !group.members.includes(clientId)) group.members.push(clientId);
+        this.broadcastBattle(record, 'mmo.battle_ready', this.battleReadyPayload(record));
         return true;
       }
     }
     return false;
+  }
+
+  announceBattleSeat(record, clientId) {
+    const fighter = this.battleFighter(record, clientId);
+    const party = record && record.parties.get(clientId);
+    if (!fighter || !party) return false;
+    const payload = {
+      battle: record.id, playerId: clientId, name: fighter.name,
+      side: 'a', mons: party.mons, badges: party.badges,
+    };
+    const sent = new Set();
+    for (const memberId of record.memberIds || []) {
+      const member = this.clients.get(memberId);
+      if (member && member.ready) { this.send(member, 'mmo.battle_seat', payload); sent.add(memberId); }
+    }
+    const entrant = this.clients.get(clientId);
+    if (entrant && entrant.ready && !sent.has(clientId)) {
+      this.send(entrant, 'mmo.battle_seat', payload);
+    }
+    return true;
+  }
+
+  sendLateBattleField(record, client) {
+    const base = record && record.packedField;
+    const party = record && record.packedParties.get(client.id);
+    if (!base || !party || !client || record.historyComplete === false) return false;
+    const field = Object.assign({}, base, {
+      flexibleWild: true,
+      slots: (base.slots || []).slice(),
+    });
+    field.slots.push({
+      side: 'a', owner: client.id, name: client.name, party,
+    });
+    this.send(client, 'mmo.coop_msg', {
+      from: record.hostId, payload: { t: 'field', field },
+    });
+    return true;
+  }
+
+  battleReadyPayload(record, extraId) {
+    const a = [];
+    for (const id of record.sides.a || []) if (!a.includes(id)) a.push(id);
+    if (extraId && !a.includes(extraId)) a.push(extraId);
+    const b = (record.sides.b || []).slice();
+    if (!a.length && record.hostId) a.push(record.hostId);
+    if (!b.length && record.hostId) b.push(record.hostId);
+    return { battle: record.id, mode: record.mode, sides: { a, b } };
+  }
+
+  sendBattleCatchup(record, client) {
+    if (!record || !client || record.historyComplete === false) return false;
+    this.send(client, 'mmo.battle_ready', this.battleReadyPayload(record, client.id));
+    for (const event of record.history || []) this.send(client, 'mmo.battle_event', event);
+    return true;
   }
 
   // Is this seat one of the trainer's rather than a player's?
@@ -2883,6 +3007,15 @@ class Relay {
     }
     const events = record.sim.drainEvents();
     for (const event of events) {
+      if (record.historyComplete !== false) {
+        if (record.history.length >= BATTLE_HISTORY_MAX) {
+          record.history = [];
+          record.historyComplete = false;
+          record.pendingAdmissions.clear();
+        } else {
+          record.history.push(event);
+        }
+      }
       this.broadcastBattle(record, 'mmo.battle_event', event);
     }
     const outcome = record.sim.outcome();
