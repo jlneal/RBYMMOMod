@@ -2891,7 +2891,52 @@ do
 end
 
 -- ------------------------------------------------------------------
--- 13. the vocabulary, on everything every scenario above produced
+-- 13. flexible Wild seats: boundary admission, independent run, rejoin
+-- ------------------------------------------------------------------
+
+do
+  local host = { playerId = "p1", name = "Ann", mons = {
+    mon({ species = "Alpha", maxHp = 200, moves = { move({ power = 10 }) } }),
+  } }
+  local wild = { playerId = "wild", name = "WILD", mons = {
+    mon({ species = "Beta", maxHp = 200, moves = { move({ power = 10 }) } }),
+  } }
+  local joiner = { playerId = "p2", name = "Bob", mons = {
+    mon({ species = "Gamma", maxHp = 200, moves = { move({ power = 10 }) } }),
+  } }
+  local battle = battleOf({ mode = "coop_wild", sides = {
+    a = { host }, b = { wild },
+  } })
+  drain(battle)
+
+  ok(battle:canChangeSeats(), "a new Wild turn opens at a roster boundary")
+  ok(battle:admit("a", joiner), "the second human can join a live Wild fight")
+  eq(fighterIn(battle:snapshot(), "p2").slot, 1, "the joiner owns stable ally slot 1")
+  ok(battle:admit("a", joiner) == false, "the occupied seat cannot be admitted twice")
+
+  ok(battle:submitChoice("p1", { action = "fight", move = 0 }),
+    "the host can commit after admission")
+  ok(battle:canChangeSeats() == false, "a committed choice closes the roster boundary")
+  ok(battle:submitChoice("p2", { action = "run" }), "the joiner may flee independently")
+  ok(battle:submitChoice("wild", { action = "fight", move = 0 }), "the Wild answers")
+  drain(battle)
+  eq(battle:outcome(), nil, "one ally running does not concede the encounter")
+  eq(fighterIn(battle:snapshot(), "p2").present, false, "the runner vacates their seat")
+  ok(battle:submitChoice("p2", { action = "fight", move = 0 }) == false,
+    "a vacant fighter cannot act")
+
+  battle.byId.p2.mons[1].hp = 17
+  local healed = { playerId = "p2", name = "Bob", mons = {
+    mon({ species = "Gamma", hp = 200, maxHp = 200 }),
+  } }
+  ok(battle:admit("a", healed), "the runner can rejoin at the next boundary")
+  eq(fighterIn(battle:snapshot(), "p2").hp, 17,
+    "rejoin restores retained battle state rather than the fresh upload")
+  eq(fighterIn(battle:snapshot(), "p2").slot, 1, "rejoin preserves the field slot")
+end
+
+-- ------------------------------------------------------------------
+-- 14. the vocabulary, on everything every scenario above produced
 -- ------------------------------------------------------------------
 
 do
@@ -2910,7 +2955,7 @@ do
 end
 
 -- ------------------------------------------------------------------
--- 14. the mirror, when Wire is reachable
+-- 15. the mirror, when Wire is reachable
 -- ------------------------------------------------------------------
 
 do

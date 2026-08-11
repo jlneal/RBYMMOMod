@@ -576,12 +576,13 @@ class Battle {
   // ----------------------------------------------------------------
 
   _foes(fighter) {
-    return this.bySide[fighter.side === 'a' ? 'b' : 'a'];
+    return this.bySide[fighter.side === 'a' ? 'b' : 'a']
+      .filter((foe) => foe.present !== false);
   }
 
   _fighterAtSlot(slot) {
     for (const fighter of this.fighters) {
-      if (fighter.slot === slot) return fighter;
+      if (fighter.slot === slot && fighter.present !== false) return fighter;
     }
     return null;
   }
@@ -595,13 +596,15 @@ class Battle {
 
   _sideAlive(side) {
     for (const fighter of this.bySide[side]) {
-      if (firstLiving(fighter.mons)) return true;
+      if (fighter.present !== false && firstLiving(fighter.mons)) return true;
     }
     return false;
   }
 
   _sidePlayers(side) {
-    return this.bySide[side].map((fighter) => fighter.playerId);
+    return this.bySide[side]
+      .filter((fighter) => fighter.present !== false)
+      .map((fighter) => fighter.playerId);
   }
 
   // A fighter owes a choice when it has something standing, or when it must pick
@@ -609,6 +612,7 @@ class Battle {
   // a spectator for the rest of the fight, and waiting on them would hang the
   // turn. Multi-turn volatiles auto-fill before the player is asked.
   _owes(fighter) {
+    if (fighter.present === false) return false;
     if (fighter.choice !== null && fighter.choice !== undefined) return false;
     if (fighter.mustReplace) {
       return firstLiving(fighter.mons) !== null;
@@ -622,6 +626,7 @@ class Battle {
   // menu) while residual damage (first-hit store) ticks — not a re-rolled fight.
   _fillForcedChoices() {
     for (const fighter of this.fighters) {
+      if (fighter.present === false) continue;
       if (fighter.choice !== null && fighter.choice !== undefined) continue;
       const mon = activeMon(fighter);
       if (!mon) continue;
@@ -734,7 +739,81 @@ class Battle {
   }
 
   _anyDisconnected() {
-    return this.fighters.some((fighter) => !fighter.connected);
+    return this.fighters.some(
+      (fighter) => fighter.present !== false && !fighter.connected,
+    );
+  }
+
+  // Flexible Wild membership changes only at a pristine choice boundary.
+  canChangeSeats() {
+    if (this.result || this.mode !== 'coop_wild' || this.phase !== 'choice') return false;
+    if (this.forcedPending) return false;
+    return this.fighters.every((fighter) => fighter.choice === null
+      || fighter.choice === undefined);
+  }
+
+  // Add the second human, or restore the same retained in-battle seat after a
+  // voluntary run. A rejoin never accepts a fresh (possibly healed) party.
+  admit(side, entry) {
+    if (!this.canChangeSeats() || side !== 'a' || !isTable(entry)) return false;
+    const playerId = str(entry.playerId);
+    if (!playerId) return false;
+
+    const existing = this.byId.get(playerId);
+    if (existing) {
+      if (existing.side !== side || existing.present !== false) return false;
+      existing.present = true;
+      existing.connected = true;
+      existing.graceEndsAt = null;
+      existing.choice = null;
+      const mon = activeMon(existing);
+      if (mon) {
+        this._emit('send', {
+          slot: existing.slot, side, hp: mon.hp, text: mon.species,
+        });
+      }
+      this._emit('reconnect', { side, text: existing.name });
+      if (this.choiceTimeout > 0) this.deadline = this.now + this.choiceTimeout;
+      return true;
+    }
+
+    const bucket = this.bySide[side];
+    if (bucket.length >= maxFighters(this.mode, side)) return false;
+    const mons = [];
+    if (Array.isArray(entry.mons)) {
+      for (const raw of entry.mons) {
+        if (mons.length >= MONS_PER_PARTY) break;
+        const mon = copyMon(raw, mons.length);
+        if (mon) mons.push(mon);
+      }
+    }
+    if (!mons.length) return false;
+
+    const index = bucket.length + 1;
+    const fighter = {
+      playerId,
+      name: str(entry.name) || playerId,
+      side,
+      index,
+      slot: Events.fieldSlot(side, index),
+      mons,
+      badges: copyBadges(entry.badges),
+      bag: copyBag(entry.bag),
+      active: firstLiving(mons),
+      present: true,
+      connected: true,
+      graceEndsAt: null,
+      choice: null,
+    };
+    this.fighters.push(fighter);
+    this.byId.set(playerId, fighter);
+    bucket.push(fighter);
+    const mon = activeMon(fighter);
+    if (mon) {
+      this._emit('send', { slot: fighter.slot, side, hp: mon.hp, text: mon.species });
+    }
+    if (this.choiceTimeout > 0) this.deadline = this.now + this.choiceTimeout;
+    return true;
   }
 
   // ----------------------------------------------------------------
@@ -852,6 +931,7 @@ class Battle {
 
     const fighter = this.byId.get(str(playerId) || '');
     if (!fighter) return false;
+    if (fighter.present === false) return false;
     if (!has(ACTIONS, choice.action)) return false;
 
     if (choice.action === 'cancel') {
@@ -1302,6 +1382,25 @@ class Battle {
       (fighter) => fighter.choice && fighter.choice.action === 'run',
     );
     if (running.length === 0) return false;
+
+    if (this.mode === 'coop_wild') {
+      const present = this.bySide.a.filter((fighter) => fighter.present !== false).length;
+      const leaving = running.filter(
+        (fighter) => fighter.side === 'a' && fighter.present !== false,
+      ).length;
+      if (present - leaving > 0) {
+        for (const fighter of running) {
+          if (fighter.side === 'a' && fighter.present !== false) {
+            fighter.present = false;
+            fighter.choice = null;
+            this._emit('run', {
+              slot: fighter.slot, side: fighter.side, text: fighter.name,
+            });
+          }
+        }
+        return false;
+      }
+    }
 
     const sides = { a: false, b: false };
     for (const fighter of running) {
@@ -2332,6 +2431,7 @@ class Battle {
 
   _resolveResiduals() {
     for (const fighter of this.fighters) {
+      if (fighter.present === false) continue;
       if (this.result) return;
       let mon = activeMon(fighter);
       if (mon && mon.status) {
@@ -2451,7 +2551,7 @@ class Battle {
 
   disconnect(playerId) {
     const fighter = this.byId.get(str(playerId) || '');
-    if (!fighter || !fighter.connected) return false;
+    if (!fighter || fighter.present === false || !fighter.connected) return false;
     if (this.result) return false;
 
     fighter.connected = false;
@@ -2583,6 +2683,7 @@ class Battle {
         playerId: fighter.playerId,
         name: fighter.name,
         connected: fighter.connected,
+        present: fighter.present !== false,
         graceEndsAt: fighter.graceEndsAt,
         chose: fighter.choice ? fighter.choice.action : null,
         mustReplace: fighter.mustReplace === true,
@@ -2672,6 +2773,7 @@ function attempt(opts) {
         badges: copyBadges(entry.badges),
         bag: copyBag(entry.bag),
         active: firstLiving(mons),
+        present: true,
         connected: true,
         graceEndsAt: null,
         choice: null,

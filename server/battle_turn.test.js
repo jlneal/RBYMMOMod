@@ -1032,3 +1032,42 @@ test('a wedged resolve aborts on the wall-clock ceiling', () => {
   assert.strictEqual(battle.snapshot().phase, 'over');
   assert.strictEqual(battle.snapshot().resolveDeadline, null);
 });
+
+test('flexible Wild seats join at boundaries, flee independently, and rejoin retained state', () => {
+  const fighter = (playerId, name, species) => ({
+    playerId, name, mons: [mn({
+      species, maxHp: 200, moves: [mv('tap', 10, 255, 0)],
+    })],
+  });
+  const battle = build({
+    id: 'flex', mode: 'coop_wild', seed: 7, choiceTimeout: 60, reconnectGrace: 60,
+    sides: {
+      a: [fighter('p1', 'Ann', 'Alpha')],
+      b: [fighter('wild', 'WILD', 'Beta')],
+    },
+  });
+  battle.drainEvents();
+  const joiner = fighter('p2', 'Bob', 'Gamma');
+
+  assert.strictEqual(battle.canChangeSeats(), true);
+  assert.strictEqual(battle.admit('a', joiner), true);
+  assert.strictEqual(battle.snapshot().field.find((f) => f.playerId === 'p2').slot, 1);
+  assert.strictEqual(battle.admit('a', joiner), false);
+
+  assert.strictEqual(battle.submitChoice('p1', { action: 'fight', move: 0 }), true);
+  assert.strictEqual(battle.canChangeSeats(), false);
+  assert.strictEqual(battle.submitChoice('p2', { action: 'run' }), true);
+  assert.strictEqual(battle.submitChoice('wild', { action: 'fight', move: 0 }), true);
+  battle.drainEvents();
+  assert.strictEqual(battle.outcome(), null, 'the host carries on after their ally flees');
+  assert.strictEqual(battle.snapshot().field.find((f) => f.playerId === 'p2').present, false);
+  assert.strictEqual(battle.submitChoice('p2', { action: 'fight', move: 0 }), false);
+
+  battle.byId.get('p2').mons[0].hp = 17;
+  const fresh = fighter('p2', 'Bob', 'Gamma');
+  fresh.mons[0].hp = 200;
+  assert.strictEqual(battle.admit('a', fresh), true);
+  const restored = battle.snapshot().field.find((f) => f.playerId === 'p2');
+  assert.strictEqual(restored.hp, 17, 'rejoin ignores a fresh/healed upload');
+  assert.strictEqual(restored.slot, 1, 'the stable field slot is retained');
+});

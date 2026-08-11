@@ -523,6 +523,7 @@ function M.create(opts)
         badges    = copyBadges(entry.badges),
         bag       = copyBag(entry.bag),
         active    = firstLiving(mons),
+        present   = true,
         connected = true,
         graceEndsAt = nil,
         choice    = nil,
@@ -599,12 +600,16 @@ end
 
 function Battle:_foes(fighter)
   local other = (fighter.side == "a") and "b" or "a"
-  return self.bySide[other]
+  local out = {}
+  for _, foe in ipairs(self.bySide[other]) do
+    if foe.present ~= false then out[#out + 1] = foe end
+  end
+  return out
 end
 
 function Battle:_fighterAtSlot(slot)
   for _, fighter in ipairs(self.fighters) do
-    if fighter.slot == slot then return fighter end
+    if fighter.slot == slot and fighter.present ~= false then return fighter end
   end
   return nil
 end
@@ -618,14 +623,16 @@ end
 
 function Battle:_sideAlive(side)
   for _, fighter in ipairs(self.bySide[side]) do
-    if firstLiving(fighter.mons) then return true end
+    if fighter.present ~= false and firstLiving(fighter.mons) then return true end
   end
   return false
 end
 
 function Battle:_sidePlayers(side)
   local out = {}
-  for _, fighter in ipairs(self.bySide[side]) do out[#out + 1] = fighter.playerId end
+  for _, fighter in ipairs(self.bySide[side]) do
+    if fighter.present ~= false then out[#out + 1] = fighter.playerId end
+  end
   return out
 end
 
@@ -634,6 +641,7 @@ end
 -- a spectator for the rest of the fight, and waiting on them would hang the
 -- turn.  Multi-turn volatiles auto-fill before the player is asked.
 function Battle:_owes(fighter)
+  if fighter.present == false then return false end
   if fighter.choice ~= nil then return false end
   if fighter.mustReplace then
     return firstLiving(fighter.mons) ~= nil
@@ -647,6 +655,7 @@ end
 -- menu) while residual damage (first-hit store) ticks — not a re-rolled fight.
 function Battle:_fillForcedChoices()
   for _, fighter in ipairs(self.fighters) do
+    if fighter.present == false then goto continue end
     if fighter.choice ~= nil then goto continue end
     local mon = activeMon(fighter)
     if not mon then goto continue end
@@ -762,9 +771,82 @@ end
 
 function Battle:_anyDisconnected()
   for _, fighter in ipairs(self.fighters) do
-    if not fighter.connected then return true end
+    if fighter.present ~= false and not fighter.connected then return true end
   end
   return false
+end
+
+-- Flexible Wild membership changes only at a pristine choice boundary. Once
+-- anybody has answered, changing the field would reinterpret an action that
+-- was committed against the old roster; the hub queues until the next turn.
+function Battle:canChangeSeats()
+  if self.result or self.mode ~= "coop_wild" or self.phase ~= "choice" then
+    return false
+  end
+  if self.forcedPending then return false end
+  for _, fighter in ipairs(self.fighters) do
+    if fighter.choice ~= nil then return false end
+  end
+  return true
+end
+
+-- Add the second human to a live one-Wild encounter, or restore a voluntarily
+-- vacated seat. Rejoining deliberately retains the old in-battle party sheet:
+-- accepting a fresh upload would make leaving a heal and party-swap exploit.
+function Battle:admit(side, entry)
+  if not self:canChangeSeats() or side ~= "a" or type(entry) ~= "table" then
+    return false
+  end
+  local playerId = str(entry.playerId)
+  if not playerId then return false end
+
+  local existing = self.byId[playerId]
+  if existing then
+    if existing.side ~= side or existing.present ~= false then return false end
+    existing.present = true
+    existing.connected = true
+    existing.graceEndsAt = nil
+    existing.choice = nil
+    local mon = activeMon(existing)
+    if mon then
+      self:_emit("send", { slot = existing.slot, side = side,
+        hp = mon.hp, text = mon.species })
+    end
+    self:_emit("reconnect", { side = side, text = existing.name })
+    if self.choiceTimeout > 0 then self.deadline = self.now + self.choiceTimeout end
+    return true
+  end
+
+  local bucket = self.bySide[side]
+  if #bucket >= maxFighters(self.mode, side) then return false end
+  local mons = {}
+  if type(entry.mons) == "table" then
+    for i = 1, #entry.mons do
+      if #mons >= M.MONS_PER_PARTY then break end
+      local mon = copyMon(entry.mons[i], #mons)
+      if mon then mons[#mons + 1] = mon end
+    end
+  end
+  if #mons == 0 then return false end
+
+  local index = #bucket + 1
+  local fighter = {
+    playerId = playerId, name = str(entry.name) or playerId,
+    side = side, index = index, slot = Events.fieldSlot(side, index),
+    mons = mons, badges = copyBadges(entry.badges), bag = copyBag(entry.bag),
+    active = firstLiving(mons), present = true, connected = true,
+    graceEndsAt = nil, choice = nil,
+  }
+  self.fighters[#self.fighters + 1] = fighter
+  self.byId[playerId] = fighter
+  bucket[#bucket + 1] = fighter
+  local mon = activeMon(fighter)
+  if mon then
+    self:_emit("send", { slot = fighter.slot, side = side,
+      hp = mon.hp, text = mon.species })
+  end
+  if self.choiceTimeout > 0 then self.deadline = self.now + self.choiceTimeout end
+  return true
 end
 
 -- ------------------------------------------------------------------
@@ -883,6 +965,7 @@ function Battle:submitChoice(playerId, choice)
 
   local fighter = self.byId[str(playerId) or ""]
   if not fighter then return false end
+  if fighter.present == false then return false end
   if not ACTIONS[choice.action] then return false end
 
   if choice.action == "cancel" then
@@ -1355,6 +1438,27 @@ function Battle:_resolveRuns()
     end
   end
   if #running == 0 then return false end
+
+  if self.mode == "coop_wild" then
+    local present, leaving = 0, 0
+    for _, fighter in ipairs(self.bySide.a) do
+      if fighter.present ~= false then present = present + 1 end
+    end
+    for _, fighter in ipairs(running) do
+      if fighter.side == "a" and fighter.present ~= false then leaving = leaving + 1 end
+    end
+    if present - leaving > 0 then
+      for _, fighter in ipairs(running) do
+        if fighter.side == "a" and fighter.present ~= false then
+          fighter.present = false
+          fighter.choice = nil
+          self:_emit("run", { slot = fighter.slot, side = fighter.side,
+            text = fighter.name })
+        end
+      end
+      return false
+    end
+  end
 
   local sides = {}
   for _, fighter in ipairs(running) do
@@ -2365,6 +2469,7 @@ end
 
 function Battle:_resolveResiduals()
   for _, fighter in ipairs(self.fighters) do
+    if fighter.present == false then goto continue end
     if self.result then return end
     local mon = activeMon(fighter)
     if mon and mon.status then
@@ -2423,6 +2528,7 @@ function Battle:_resolveResiduals()
         end
       end
     end
+    ::continue::
   end
 end
 
@@ -2480,7 +2586,7 @@ end
 
 function Battle:disconnect(playerId)
   local fighter = self.byId[str(playerId) or ""]
-  if not fighter or not fighter.connected then return false end
+  if not fighter or fighter.present == false or not fighter.connected then return false end
   if self.result then return false end
 
   fighter.connected = false
@@ -2609,6 +2715,7 @@ function Battle:snapshot()
       playerId = fighter.playerId,
       name = fighter.name,
       connected = fighter.connected,
+      present = fighter.present ~= false,
       graceEndsAt = fighter.graceEndsAt,
       chose = fighter.choice ~= nil and fighter.choice.action or nil,
       mustReplace = fighter.mustReplace == true,
