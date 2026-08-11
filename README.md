@@ -429,10 +429,11 @@ late-joinable encounter from its first command. Off-map joining is off by
 default and never teleports or automatically admits the distant player.
 
 **PROX JOIN** is on by default. Each connected player gets a **PROX DIST** row:
-`OFF` keeps manual joining, 1–8 tiles opts into a local radius, and `SAME MAP`
-preserves v1's automatic Party vs Wild behavior. Proximity applies to trainer
-and Wild co-op but never supplies PvP consent. All host gameplay policy is
-fixed when the session starts and requires a restart to change.
+`OFF` keeps manual joining, 1–8 tiles opts into that radius for trainer and
+Wild co-op, and `SAME MAP` preserves v1's automatic Party vs Wild behavior
+while trainer co-op keeps its ordinary prompt. Proximity never supplies PvP
+consent. All host gameplay policy is fixed when the session starts and requires
+a restart to change.
 
 **A party battle is scored as a team battle.** Each of the four is rated
 against the *other pair's* combined strength — which is the match they actually

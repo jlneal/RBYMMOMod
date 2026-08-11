@@ -70,9 +70,10 @@ function M.new(transport, ui, party, roster, chat, coopExpEnabled,
     coopMoneyEnabled = type(coopMoneyEnabled) == "function" and coopMoneyEnabled
       or function() return true end,
     proximityJoinEnabled = type(proximityJoinEnabled) == "function"
-      and proximityJoinEnabled or function() return false end,
+      and proximityJoinEnabled
+      or function() return Config.DEFAULT_PROXIMITY_JOIN_ENABLED end,
     autoJoinRange = type(autoJoinRange) == "function" and autoJoinRange
-      or function() return 0 end,
+      or function() return Config.DEFAULT_AUTO_JOIN_RANGE end,
     currentPosition = type(currentPosition) == "function" and currentPosition
       or function() return nil end,
     wildCoopEnabled = type(wildCoopEnabled) == "function" and wildCoopEnabled
@@ -146,9 +147,12 @@ function M.withinAutoJoin(current, remote, range)
                   math.abs(current.y - remote.y)) <= range
 end
 
-function M:autoJoinInRange(game, offer)
+function M:autoJoinInRange(game, offer, myMap)
   local range = self:configuredAutoJoinRange()
   if range <= 0 or self:inFight(game) then return false end
+  if range == Config.AUTO_JOIN_SAME_MAP then
+    return offer and offer.map ~= nil and myMap ~= nil and offer.map == myMap
+  end
   local current = self.currentPosition()
   local remote = offer and self.roster and self.roster:get(offer.from)
   return M.withinAutoJoin(current, remote, range)
@@ -976,7 +980,7 @@ function M:considerOffer(game, myMap)
     -- Covered wild under a wait box counts as inFight; free joiners must not
     -- be mid-fight. Mutual wait is handled above before this check.
     if self:inFight(game) then return false end
-    if self:autoJoinInRange(game, offer) then
+    if self:autoJoinInRange(game, offer, myMap) then
       return self:autoJoinWild(offer, true)
     end
     -- Wild offers remain available through the remote player's exact JOIN
@@ -985,7 +989,11 @@ function M:considerOffer(game, myMap)
   end
 
   if self.waiting or self:inFight(game) then return false end
-  if self:autoJoinInRange(game, offer) then
+  -- SAME MAP is the compatibility preset for v1's automatic Party vs Wild.
+  -- Trainer co-op keeps v1's explicit prompt unless this player deliberately
+  -- chooses a numeric proximity radius.
+  if self:configuredAutoJoinRange() ~= Config.AUTO_JOIN_SAME_MAP
+      and self:autoJoinInRange(game, offer, myMap) then
     self.offer = nil
     self.transport:send(Wire.COOP_JOIN,
       { to = offer.from, battle = offer.battle, auto = true })
