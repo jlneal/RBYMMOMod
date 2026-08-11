@@ -116,7 +116,10 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // 20 makes Party vs Wild live before a second player joins and adds packed-
 // field plus authoritative-history hydration; a protocol-19 client would wait
 // forever under the old fixed-roster COOP_JOINED meaning.
-const PROTOCOL = 20;
+// 21 adds Campaign State frontier and sequence authority. A protocol-20 hub
+// would silently discard those requests, so the combined integration must not
+// claim wire compatibility with the standalone flexible-Wild branch.
+const PROTOCOL = 21;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right

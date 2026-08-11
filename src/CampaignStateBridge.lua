@@ -202,7 +202,7 @@ end
 
 function M:onReady(raw)
   if self.frontierAdmission then
-    return nil, "protocol-19 frontier acknowledgement is required"
+    return nil, "campaign frontier acknowledgement is required"
   end
   if type(raw) ~= "table" or not self.api then return nil, "authority reply is invalid" end
   local status = self.api.status and self.api.status() or nil

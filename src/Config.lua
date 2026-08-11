@@ -123,7 +123,13 @@ M.MOD_ID = "rby_mmo"
 -- live fan-out. A protocol-19 client would interpret COOP_JOINED as the old
 -- fixed-roster start and wait forever for the second party, so refusal is the
 -- only safe mixed-version behavior.
-M.PROTOCOL = 20
+--
+-- 21 adds the optional Campaign State authority vocabulary. A protocol-20 hub
+-- would silently ignore a shared world's frontier advertisement and sequence
+-- requests, leaving the campaign replica unable to commit. The combined
+-- integration therefore gets its own generation; the standalone flexible-
+-- Wild branch remains protocol 20.
+M.PROTOCOL = 21
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.
