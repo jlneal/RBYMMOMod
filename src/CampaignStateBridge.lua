@@ -56,7 +56,7 @@ function M.new(options)
   if options.foundation.apiVersion ~= nil
     and (type(options.foundation.apiVersion) ~= "number"
       or options.foundation.apiVersion ~= math.floor(options.foundation.apiVersion)
-      or options.foundation.apiVersion < 2 or options.foundation.apiVersion > 3) then
+      or options.foundation.apiVersion < 2 or options.foundation.apiVersion > 4) then
     return nil, "campaign_state API version is incompatible"
   end
   if type(options.send) ~= "function" then return nil, "send callback is required" end
@@ -65,7 +65,7 @@ function M.new(options)
     api = nil, pending = {}, grants = {}, offers = {}, serial = 0,
     frontierAdmission = options.frontierAdmission == true,
     admission = nil, admittedBase = nil, authorityRevision = nil,
-    authorized = false, blocked = nil }, M)
+    authorized = false, blocked = nil, membershipPending = false }, M)
 end
 
 function M:requestId()
@@ -255,6 +255,31 @@ function M:onFrontierReady(raw)
   self.admittedBase = CampaignAdmission.normalizeBase(raw.grantBase)
   self.authorityRevision = raw.authorityRevision
   self.authorized, self.blocked = true, nil
+  if self.foundation.apiVersion and self.foundation.apiVersion >= 4
+    and type(self.foundation.ensureMembership) == "function" then
+    self.membershipPending = true
+    local function complete(events, membershipWhy)
+      self.membershipPending = false
+      if not events then
+        self.authorized = false
+        self.blocked = membershipWhy or "canonical membership was refused"
+      end
+    end
+    local membership, membershipWhy = self.foundation.ensureMembership(complete)
+    if membership == "pending" then
+      -- Membership is the only ordered write allowed through this transient
+      -- window. Its issued grant remains valid after this gate closes; all
+      -- unrelated content waits for the frontier produced by its commit.
+      self.authorized = false
+      return true
+    end
+    self.membershipPending = false
+    if not membership then
+      self.authorized = false
+      self.blocked = membershipWhy or "canonical membership was refused"
+      return nil, self.blocked
+    end
+  end
   return true
 end
 
@@ -291,10 +316,18 @@ function M:onEvents(envelope)
 end
 
 function M:invite(to)
-  local invitation, why = self.foundation.invitation()
+  local delivered = false
+  local function sendInvitation(invitation, why)
+    if delivered then return end
+    delivered = true
+    if not invitation then return nil, why end
+    self.send(M.INVITE, { to = to, invitation = invitation })
+    return true
+  end
+  local invitation, why = self.foundation.invitation(sendInvitation)
+  if invitation == "pending" then return "pending" end
   if not invitation then return nil, why end
-  self.send(M.INVITE, { to = to, invitation = invitation })
-  return true
+  return sendInvitation(invitation)
 end
 
 function M:accept(invitation)
@@ -346,6 +379,7 @@ function M:reset(reason)
   self.admittedBase = nil
   self.authorityRevision = nil
   self.authorized, self.blocked = false, nil
+  self.membershipPending = false
   return true
 end
 

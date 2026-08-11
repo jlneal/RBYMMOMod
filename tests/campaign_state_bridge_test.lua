@@ -248,4 +248,83 @@ eq(attached19.authority:commit("grant-reset-19", {}), nil,
 eq(bridge19.authorized, false,
   "reopened save must repeat canonical frontier admission")
 
+-- API 4 makes durable membership the first ordered write after an invited
+-- character catches up. No unrelated reservation is admitted in between.
+local sent4, attached4, invitationReady, memberActive = {}, nil, nil, false
+local foundation4 = {
+  apiVersion = 4,
+  registerTransport = function(_, transport)
+    attached4 = transport
+    transport.attach({
+      inventory = function() return { signed = "inventory-4" } end,
+      frontier = function() return replicaFrontier end,
+      admission = function(_, revision)
+        if revision == nil then
+          return { state = "matched", replica = { revision = R } }
+        end
+        return { state = "writable", grantBase = grantBase }
+      end,
+      validateGrantBase = function() return true end,
+      batch = function() return { signed = "membership-events" } end,
+      missing = function() return {} end,
+      receive = function() return 0 end,
+      status = function()
+        return { active = true, worldId = "world-19", playerId = "bob" }
+      end,
+    })
+    return true
+  end,
+  ensureMembership = function(done)
+    if memberActive then return true end
+    return attached4.authority:request("bob", "campaign.membership.transition",
+      "campaign:member:bob", function(grant, why)
+        if not grant then return done(nil, why) end
+        memberActive = true
+        attached4.authority:commit(grant.grant,
+          { { kind = "campaign.membership.transition" } })
+        done({ { kind = "campaign.membership.transition" } })
+      end)
+  end,
+  invitation = function(done) invitationReady = done; return "pending" end,
+  acceptInvitation = function() return true end,
+}
+local bridge4 = assert(Bridge.new({ foundation = foundation4,
+  frontierAdmission = true,
+  send = function(kind, payload)
+    sent4[#sent4 + 1] = { kind = kind, payload = payload }
+  end }))
+check(bridge4:install(), "API-4 membership bridge installs")
+check(bridge4:advertise(), "invited replica advertises before membership")
+assert(bridge4:onFrontier(authorityFrontier))
+local membershipEcho = sent4[#sent4].payload.admission
+check(bridge4:onFrontierReady(membershipEcho),
+  "frontier admission begins canonical self-membership")
+eq(sent4[#sent4].kind, Bridge.SEQUENCE_REQUEST,
+  "membership obtains ordinary canonical authority")
+eq(sent4[#sent4].payload.kind, "campaign.membership.transition",
+  "the transport carries membership without owning its meaning")
+eq(bridge4.authorized, false,
+  "unrelated writes remain gated while membership is pending")
+local memberRequest = sent4[#sent4].payload.request
+check(bridge4:onGrant({ request = memberRequest, grant = "member-grant",
+  world = "world-19", position = 4, base = grantBase }),
+  "the exact membership grant reaches Campaign State")
+check(memberActive, "the invited stable player becomes canonically active")
+eq(sent4[#sent4].kind, Bridge.SEQUENCE_COMMIT,
+  "membership commits before ordinary world writes resume")
+
+assert(bridge4:onFrontier(authorityFrontier))
+local activeEcho = sent4[#sent4].payload.admission
+check(bridge4:onFrontierReady(activeEcho),
+  "an already active member passes the next frontier admission")
+check(bridge4.authorized,
+  "ordinary ordered writes resume only after active membership is observed")
+eq(bridge4:invite("peer"), "pending",
+  "asynchronous invitation preparation remains non-blocking")
+check(type(invitationReady) == "function",
+  "the bridge retains the exact invitation completion callback")
+invitationReady({ signed = "invitation-4" })
+eq(sent4[#sent4].kind, Bridge.INVITE,
+  "a prepared invitation is sent exactly once")
+
 print(("campaign state MMO bridge: %d assertions passed"):format(passed))
