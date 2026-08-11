@@ -525,6 +525,7 @@ class Battle {
     this.byId = new Map();
     this.bySide = { a: [], b: [] };
     this.result = null;
+    this.evidenceRevision = 1;
   }
 
   // ----------------------------------------------------------------
@@ -767,6 +768,8 @@ class Battle {
       existing.connected = true;
       existing.graceEndsAt = null;
       existing.choice = null;
+      existing.choiceByPlayer = false;
+      this.evidenceRevision += 1;
       const mon = activeMon(existing);
       if (mon) {
         this._emit('send', {
@@ -805,10 +808,13 @@ class Battle {
       connected: true,
       graceEndsAt: null,
       choice: null,
+      choiceByPlayer: false,
+      actedInResolvedTurn: false,
     };
     this.fighters.push(fighter);
     this.byId.set(playerId, fighter);
     bucket.push(fighter);
+    this.evidenceRevision += 1;
     const mon = activeMon(fighter);
     if (mon) {
       this._emit('send', { slot: fighter.slot, side, hp: mon.hp, text: mon.species });
@@ -833,10 +839,12 @@ class Battle {
     const fighter = { playerId, name: str(entry.name) || 'WILD', side: 'b',
       index, slot: Events.fieldSlot('b', index), mons, badges: null, bag: null,
       active: firstLiving(mons), present: true, connected: true,
-      graceEndsAt: null, choice: null };
+      graceEndsAt: null, choice: null, choiceByPlayer: false,
+      actedInResolvedTurn: false };
     this.fighters.push(fighter);
     this.byId.set(playerId, fighter);
     this.bySide.b.push(fighter);
+    this.evidenceRevision += 1;
     const mon = activeMon(fighter);
     if (mon) this._emit('send', { slot: fighter.slot, side: 'b', hp: mon.hp,
       text: mon.species });
@@ -967,6 +975,7 @@ class Battle {
         slot: fighter.slot, side: fighter.side, text: fighter.name,
       });
       fighter.choice = null;
+      fighter.choiceByPlayer = false;
       return true;
     }
 
@@ -981,6 +990,10 @@ class Battle {
     if (!normalised) return false;
 
     fighter.choice = normalised;
+    // Forced replacement is roster maintenance between turns, not evidence
+    // that the player acted during a resolved turn. Voluntary choices are only
+    // promoted to the cumulative record when resolution actually begins.
+    fighter.choiceByPlayer = !fighter.mustReplace;
     // Peers need this for the wait line: without it, only the chooser's own
     // client knows they answered (there is no `act` fan-out on the mediated path).
     this._emit('chose', {
@@ -1310,6 +1323,7 @@ class Battle {
     const auto = this._autoChoice(fighter);
     if (!auto) return false;
     fighter.choice = auto;
+    fighter.choiceByPlayer = false;
     this._emit('chose', {
       slot: fighter.slot, side: fighter.side, text: fighter.name,
     });
@@ -1332,7 +1346,10 @@ class Battle {
     this.phase = 'choice';
     this.resolveDeadline = null;
     this.forcedPending = false;
-    for (const fighter of this.fighters) fighter.choice = null;
+    for (const fighter of this.fighters) {
+      fighter.choice = null;
+      fighter.choiceByPlayer = false;
+    }
     this.deadline = this.choiceTimeout > 0 ? this.now + this.choiceTimeout : null;
     this._emit('turn', { amount: this.turn });
     this._fillForcedChoices();
@@ -1384,6 +1401,15 @@ class Battle {
 
   _resolveTurn() {
     this.phase = 'resolving';
+    let changedEvidence = false;
+    for (const fighter of this.fighters) {
+      if (fighter.choice && fighter.choiceByPlayer === true
+          && fighter.actedInResolvedTurn !== true) {
+        fighter.actedInResolvedTurn = true;
+        changedEvidence = true;
+      }
+    }
+    if (changedEvidence) this.evidenceRevision += 1;
     // Armed for the rare case resolution does not leave this phase in the same
     // call -- a throw mid-resolve used to leave the field wedged forever, and
     // the hub's handle() contains those throws so the clock has to finish the job.
@@ -1420,6 +1446,7 @@ class Battle {
           if (fighter.side === 'a' && fighter.present !== false) {
             fighter.present = false;
             fighter.choice = null;
+            this.evidenceRevision += 1;
             this._emit('run', {
               slot: fighter.slot, side: fighter.side, text: fighter.name, amount: 1,
             });
@@ -2582,6 +2609,23 @@ class Battle {
     return this.result;
   }
 
+  /*
+   * Authoritative participation evidence, returned as fresh arrays so callers
+   * cannot mutate the simulator. Hubs intersect these ids with their human
+   * member roster before placing the snapshot on the wire.
+   */
+  participation() {
+    const present = [];
+    const acted = [];
+    for (const fighter of this.fighters) {
+      if (fighter.present !== false && fighter.connected) present.push(fighter.playerId);
+      if (fighter.actedInResolvedTurn === true) acted.push(fighter.playerId);
+    }
+    present.sort();
+    acted.sort();
+    return { present, acted, revision: this.evidenceRevision };
+  }
+
   // ----------------------------------------------------------------
   // the clock
   // ----------------------------------------------------------------
@@ -2592,6 +2636,7 @@ class Battle {
     if (this.result) return false;
 
     fighter.connected = false;
+    this.evidenceRevision += 1;
     fighter.graceEndsAt = this.now + this.reconnectGrace;
     this._emit('wait', { side: fighter.side, text: fighter.name });
     return true;
@@ -2608,6 +2653,7 @@ class Battle {
     if (fighter.graceEndsAt !== null && this.now >= fighter.graceEndsAt) return false;
 
     fighter.connected = true;
+    this.evidenceRevision += 1;
     fighter.graceEndsAt = null;
     this._emit('reconnect', { side: fighter.side, text: fighter.name });
 
@@ -2678,7 +2724,8 @@ class Battle {
         if (this._owes(fighter)) {
           const auto = this._autoChoice(fighter);
           if (auto) {
-            fighter.choice = auto;
+          fighter.choice = auto;
+          fighter.choiceByPlayer = false;
             this._emit('chose', {
               slot: fighter.slot, side: fighter.side, text: fighter.name,
             });
@@ -2814,6 +2861,8 @@ function attempt(opts) {
         connected: true,
         graceEndsAt: null,
         choice: null,
+        choiceByPlayer: false,
+        actedInResolvedTurn: false,
       };
       self.fighters.push(fighter);
       self.byId.set(playerId, fighter);

@@ -43,6 +43,7 @@ local Config = need("Config")
 local Wire = need("Wire")
 local CampaignWire = need("CampaignWire")
 local CampaignAdmission = need("CampaignAdmission")
+local CampaignIdentity = need("CampaignIdentity")
 local Sha256 = need("Sha256")
 local Rank = need("Rank")
 -- The turn machine, and the one thing in this file that is not pure routing.
@@ -1352,6 +1353,8 @@ function M:openMediatedBattle(id, plan)
     id = id,
     mode = mode,
     hostId = hostId,
+    hostGeneration = 1,
+    hostHistory = { hostId },
     memberIds = memberIds,
     eligibleIds = {},
     sides = { a = copy(sides.a), b = copy(sides.b) },
@@ -1527,6 +1530,12 @@ function M:reofferFlexibleWild(record, event)
   local group = self.coopBattles[record.id]
   if group then removeId(group.members, clientId) end
   client.battleId, client.coopBattleId = nil, nil
+  if record.hostId ~= owner.id then
+    record.hostId = owner.id
+    record.hostGeneration = (record.hostGeneration or 1) + 1
+    record.hostHistory = record.hostHistory or {}
+    record.hostHistory[#record.hostHistory + 1] = owner.id
+  end
 
   owner.coopOffer = { battle = encounter.battle, label = encounter.label,
     map = encounter.map, mode = "coop_wild", plan = record.id,
@@ -2003,6 +2012,78 @@ function M:settleMediated(record, outcome)
   if outcome.reason then payload.reason = outcome.reason end
   if outcome.caught then payload.caught = outcome.caught end
   if outcome.catcher then payload.catcher = outcome.catcher end
+  if outcome.catches then payload.catches = outcome.catches end
+
+  -- The simulator is the only witness that knows which accepted choices
+  -- reached a resolved turn. Intersect its snapshot with the hub's human
+  -- membership so NPC seats can never leak into campaign participation.
+  local evidence = record.sim and record.sim:participation()
+  local members = {}
+  for _, id in ipairs(record.memberIds or {}) do members[id] = true end
+  payload.participants, payload.acted = {}, {}
+  for _, id in ipairs((evidence and evidence.present) or {}) do
+    if members[id] then payload.participants[#payload.participants + 1] = id end
+  end
+  for _, id in ipairs((evidence and evidence.acted) or {}) do
+    if members[id] then payload.acted[#payload.acted + 1] = id end
+  end
+  table.sort(payload.participants)
+  table.sort(payload.acted)
+
+  -- When every finishing human has completed Campaign State admission for the
+  -- same world, translate the transport roster into stable campaign actors.
+  -- This is an all-or-nothing attachment: a partial identity map would make a
+  -- valid teammate disappear from the durable qualification receipt.
+  local campaign, seen, world, compatibility = {}, {}, nil, nil
+  local hostHistory = record.hostHistory or { record.hostId }
+  local complete = #payload.participants > 0 and #hostHistory <= 16
+  local function mapCampaignActor(id)
+    if campaign[id] then return true end
+    local client = self.clients[id]
+    local state = client and client.worldState
+    if type(state) ~= "table" or type(state.player) ~= "string"
+      or type(state.world) ~= "string" or type(state.compatibility) ~= "string"
+      or (seen[state.player] and seen[state.player] ~= id)
+      or (world and (state.world ~= world or state.compatibility ~= compatibility)) then
+      return false
+    end
+    world, compatibility = state.world, state.compatibility
+    seen[state.player], campaign[id] = id, state.player
+    return true
+  end
+  for _, id in ipairs(payload.participants) do
+    if not mapCampaignActor(id) then complete = false; break end
+  end
+  if complete then
+    for _, id in ipairs(hostHistory) do
+      if not mapCampaignActor(id) then complete = false; break end
+    end
+  end
+  local campaignHost = campaign[record.hostId]
+  if complete and campaignHost then
+    payload.campaignWorld, payload.campaignHost = world, campaignHost
+    payload.campaignGeneration = record.hostGeneration or 1
+    payload.campaignRevision = evidence and evidence.revision or 1
+    payload.campaignParticipants, payload.campaignActed = {}, {}
+    payload.campaignHosts = {}
+    for _, id in ipairs(payload.participants) do
+      payload.campaignParticipants[#payload.campaignParticipants + 1] = campaign[id]
+    end
+    local present = {}
+    for _, id in ipairs(payload.participants) do present[id] = true end
+    for _, id in ipairs(payload.acted) do
+      if present[id] then payload.campaignActed[#payload.campaignActed + 1] = campaign[id] end
+    end
+    for _, id in ipairs(hostHistory) do
+      payload.campaignHosts[#payload.campaignHosts + 1] = campaign[id]
+    end
+    table.sort(payload.campaignParticipants)
+    table.sort(payload.campaignActed)
+    if record.campaignOccurrence and record.campaignDefinition then
+      payload.campaignOccurrence = record.campaignOccurrence
+      payload.campaignDefinition = record.campaignDefinition
+    end
+  end
   self:broadcastBattle(record, Wire.BATTLE_OUTCOME, payload)
 
   local match = self.matches[record.id]
@@ -2896,6 +2977,18 @@ handlers[Wire.COOP_RELAY] = function(self, client, msg)
       end
     elseif msg.payload.t == "field" and client.id == mediated.hostId then
       mediated.packedField = msg.payload.field
+      local field = msg.payload.field
+      local occurrence = type(field) == "table"
+        and CampaignIdentity.identifier(field.campaignOccurrence, 96) or nil
+      local definition = type(field) == "table"
+        and type(field.campaignDefinition) == "string"
+        and #field.campaignDefinition == 16
+        and field.campaignDefinition:match("^[0-9a-f]+$")
+        and field.campaignDefinition or nil
+      if occurrence and definition then
+        mediated.campaignOccurrence = occurrence
+        mediated.campaignDefinition = definition
+      end
     elseif msg.payload.t == "wild_mate" and client.id == mediated.hostId
         and type(msg.payload.party) == "table" and type(msg.payload.mons) == "table" then
       local mons = {}

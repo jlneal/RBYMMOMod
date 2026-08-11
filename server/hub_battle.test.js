@@ -149,6 +149,14 @@ function testMediatedOneVOneKo() {
   a.peer.outbox = [];
   b.peer.outbox = [];
   uploadAndReady(relay, a, b, session);
+  relay.clients.get(a.id).worldState = {
+    world: 'shared-world', compatibility: 'same', player: 'campaign-ann',
+  };
+  relay.clients.get(b.id).worldState = {
+    world: 'shared-world', compatibility: 'same', player: 'campaign-bob',
+  };
+  relay.battles.get(session.id).campaignOccurrence = 'rby:gym:campaign-ann.1';
+  relay.battles.get(session.id).campaignDefinition = '0123456789abcdef';
 
   let outcome = null;
   for (let turn = 0; turn < 30; turn++) {
@@ -170,6 +178,23 @@ function testMediatedOneVOneKo() {
     'intermediator ends the fight with a ko outcome');
   ok(Array.isArray(outcome.winners) && outcome.winners.length === 1,
     'outcome names a winner');
+  ok(Array.isArray(outcome.participants) && outcome.participants.length === 2,
+    'outcome snapshots both connected finishers');
+  ok(Array.isArray(outcome.acted) && outcome.acted.length === 2,
+    'outcome snapshots both resolved-turn actors');
+  ok(outcome.campaignWorld === 'shared-world'
+      && outcome.campaignHost === 'campaign-ann',
+  'outcome binds admitted campaign world and host identity');
+  ok(outcome.campaignParticipants.join(',') === 'campaign-ann,campaign-bob'
+      && outcome.campaignActed.join(',') === 'campaign-ann,campaign-bob',
+  'outcome translates final presence and action through one identity map');
+  ok(outcome.campaignGeneration === 1 && outcome.campaignRevision >= 2,
+    'outcome binds host generation and monotonic evidence revision');
+  ok(outcome.campaignHosts.join(',') === 'campaign-ann',
+    'outcome carries the authenticated host history, not only its generation');
+  ok(outcome.campaignOccurrence === 'rby:gym:campaign-ann.1'
+      && outcome.campaignDefinition === '0123456789abcdef',
+  'outcome binds the content-minted occurrence and local definition');
   ok(!relay.battles.has(session.id),
     'the mediated record is cleared after settle');
 }
@@ -484,6 +509,27 @@ function testFlexibleWildAdmissionBoundary() {
   const reoffer = take(b, 'mmo.coop_offer');
   ok(reoffer && reoffer.battle === 'ROUTE_1|WILD',
     'the runner can explicitly rejoin the same encounter');
+
+  ok(relay.queueBattleAdmission(record, relay.get(b.id), {
+    battle: record.id, side: 'a', mons: [mon(10)],
+  }) === false, 'the former runner queues behind the Wild automatic choice');
+  ok(record.sim.submitChoice(a.id, { action: 'fight', move: 0 }),
+    'the survivor closes that already-open turn');
+  relay.flushBattle(record);
+  ok(record.sim.byId.get(b.id).present === true,
+    'the queued runner rejoins at the next pristine boundary');
+  ok(record.sim.submitChoice(a.id, { action: 'run' }),
+    'the original host may later leave independently');
+  ok(record.sim.submitChoice(b.id, { action: 'fight', move: 0 }),
+    'the surviving player carries the encounter');
+  if (record.sim._owes(record.sim.byId.get(record.npcIds[0]))) {
+    ok(record.sim.autoPick(record.npcIds[0]), 'the Wild closes the transfer turn');
+  }
+  relay.flushBattle(record);
+  ok(record.hostId === b.id, 'encounter authority transfers to the survivor');
+  ok(record.hostGeneration === 2, 'host transfer advances its generation');
+  ok(record.hostHistory.join(',') === `${a.id},${b.id}`,
+    'host transfer appends to the reconstructable authority history');
 }
 
 function testFlexibleWildBootstrapCapture() {

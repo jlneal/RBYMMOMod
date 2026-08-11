@@ -214,6 +214,7 @@ function cleanWorldFrontierAdmission(value) {
 }
 
 module.exports = {
+  cleanProgressionId,
   cleanWorldInventory, cleanWorldBatch, cleanWorldInvitation,
   cleanWorldSequenceRequest, cleanWorldSequenceGrant,
   cleanWorldSequenceCancel, cleanWorldFrontier, cleanWorldGrantBase,

@@ -388,6 +388,10 @@ function M.new(game, opts)
     -- The trainer this battle stood in for: their picture, their music, and
     -- the line they say when they lose.
     trainer = opts.trainer,
+    trainerClass = opts.trainerClass,
+    trainerPartyIndex = opts.trainerPartyIndex,
+    campaignOccurrence = opts.campaignOccurrence,
+    campaignDefinition = opts.campaignDefinition,
     trainerPic = opts.trainerPic,
     endBattleText = opts.endBattleText,
     -- Whether winning this one moves anybody's rating. Handed in rather than
@@ -558,6 +562,9 @@ function M:announce(name, extra)
     -- listener that writes to it desyncs all four clients. Said in the README
     -- beside the snippet, which is where somebody writing a listener looks.
     battle = self,
+    -- Stable transport identity for listeners that need to correlate the
+    -- started and ended snapshots without retaining the mutable battle table.
+    battleId = self.battleId,
     -- What *kind* of battle, as a word. This used to be the slot count -- a
     -- number, under a name that reads like a category -- so a listener asking
     -- "is this a party battle?" got `4` and could only be wrong.
@@ -573,7 +580,12 @@ function M:announce(name, extra)
     mine = self.mine,
     side = slots[self.mine] and slots[self.mine].side,
     host = self.host,
+    hostId = self.hostId,
     trainerId = self.trainer and self.trainer.id,
+    trainerClass = self.trainerClass,
+    trainerPartyIndex = self.trainerPartyIndex,
+    campaignOccurrence = self.campaignOccurrence,
+    campaignDefinition = self.campaignDefinition,
     -- Whether it moves anybody's rating -- see Coop.ranksPoints.
     ranked = self.ranksPoints and true or false,
     slots = {},
@@ -859,7 +871,10 @@ function M:exit()
   if eng and eng.Music then pcall(eng.Music.restoreMap, self.game.data) end
   if self.onDone and not self.reported then
     self.reported = true
-    self:announce("coop_battle_ended", { result = self.result or "draw" })
+    self:announce("coop_battle_ended", {
+      result = self.result or "draw",
+      receipt = self.authoritativeReceipt,
+    })
     self.onDone(self.result or "draw", self.toLearn)
   end
 end
@@ -5685,6 +5700,35 @@ function M:onBattleOutcome(msg)
   if not self.mediated then return false end
   if msg.battle ~= self.battleId then return false end
   if self.result then return false end
+
+  -- Snapshot the hub-authored evidence before any screen teardown. Never put
+  -- the mutable live battle object inside this receipt: Campaign adapters may
+  -- retain it until the engine's later trainer-commit event arrives.
+  local function ids(value)
+    local out = {}
+    for _, id in ipairs(type(value) == "table" and value or {}) do
+      out[#out + 1] = id
+    end
+    return out
+  end
+  self.authoritativeReceipt = {
+    battle = msg.battle,
+    outcome = msg.outcome,
+    reason = msg.reason,
+    winners = ids(msg.winners),
+    losers = ids(msg.losers),
+    participants = ids(msg.participants),
+    acted = ids(msg.acted),
+    campaignWorld = msg.campaignWorld,
+    campaignHost = msg.campaignHost,
+    campaignGeneration = msg.campaignGeneration,
+    campaignRevision = msg.campaignRevision,
+    campaignParticipants = ids(msg.campaignParticipants),
+    campaignActed = ids(msg.campaignActed),
+    campaignHosts = ids(msg.campaignHosts),
+    campaignOccurrence = msg.campaignOccurrence,
+    campaignDefinition = msg.campaignDefinition,
+  }
 
   local mine = self:mySlot()
   local mySide = mine and mine.side

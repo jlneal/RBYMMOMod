@@ -469,6 +469,7 @@ function M.create(opts)
     byId           = {},
     bySide         = { a = {}, b = {} },
     result         = nil,
+    evidenceRevision = 1,
     resolveDeadline = nil,
   }, Battle)
 
@@ -528,6 +529,8 @@ function M.create(opts)
         connected = true,
         graceEndsAt = nil,
         choice    = nil,
+        choiceByPlayer = false,
+        actedInResolvedTurn = false,
       }
       self.fighters[#self.fighters + 1] = fighter
       self.byId[playerId] = fighter
@@ -808,6 +811,8 @@ function Battle:admit(side, entry)
     existing.connected = true
     existing.graceEndsAt = nil
     existing.choice = nil
+    existing.choiceByPlayer = false
+    self.evidenceRevision = self.evidenceRevision + 1
     local mon = activeMon(existing)
     if mon then
       self:_emit("send", { slot = existing.slot, side = side,
@@ -836,11 +841,13 @@ function Battle:admit(side, entry)
     side = side, index = index, slot = Events.fieldSlot(side, index),
     mons = mons, badges = copyBadges(entry.badges), bag = copyBag(entry.bag),
     active = firstLiving(mons), present = true, connected = true,
-    graceEndsAt = nil, choice = nil,
+    graceEndsAt = nil, choice = nil, choiceByPlayer = false,
+    actedInResolvedTurn = false,
   }
   self.fighters[#self.fighters + 1] = fighter
   self.byId[playerId] = fighter
   bucket[#bucket + 1] = fighter
+  self.evidenceRevision = self.evidenceRevision + 1
   local mon = activeMon(fighter)
   if mon then
     self:_emit("send", { slot = fighter.slot, side = side,
@@ -866,10 +873,12 @@ function Battle:admitWild(entry)
   local fighter = { playerId = playerId, name = str(entry.name) or "WILD",
     side = "b", index = index, slot = Events.fieldSlot("b", index), mons = mons,
     badges = nil, bag = nil, active = firstLiving(mons), present = true,
-    connected = true, graceEndsAt = nil, choice = nil }
+    connected = true, graceEndsAt = nil, choice = nil,
+    choiceByPlayer = false, actedInResolvedTurn = false }
   self.fighters[#self.fighters + 1] = fighter
   self.byId[playerId] = fighter
   self.bySide.b[#self.bySide.b + 1] = fighter
+  self.evidenceRevision = self.evidenceRevision + 1
   local mon = activeMon(fighter)
   if mon then self:_emit("send", { slot = fighter.slot, side = "b",
     hp = mon.hp, text = mon.species }) end
@@ -1001,6 +1010,7 @@ function Battle:submitChoice(playerId, choice)
       slot = fighter.slot, side = fighter.side, text = fighter.name,
     })
     fighter.choice = nil
+    fighter.choiceByPlayer = false
     return true
   end
 
@@ -1015,6 +1025,10 @@ function Battle:submitChoice(playerId, choice)
   if not normalised then return false end
 
   fighter.choice = normalised
+  -- A forced replacement is roster maintenance between turns, not evidence
+  -- that the player acted during a resolved turn. Voluntary choices are only
+  -- promoted to the cumulative record when resolution actually begins.
+  fighter.choiceByPlayer = not fighter.mustReplace
   -- Peers need this for the wait line: without it, only the chooser's own
   -- client knows they answered (there is no `act` fan-out on the mediated path).
   self:_emit("chose", {
@@ -1372,6 +1386,7 @@ function Battle:autoPick(playerId)
   local auto = self:_autoChoice(fighter)
   if not auto then return false end
   fighter.choice = auto
+  fighter.choiceByPlayer = false
   self:_emit("chose", {
     slot = fighter.slot, side = fighter.side, text = fighter.name,
   })
@@ -1387,7 +1402,10 @@ function Battle:_openTurn()
   self.phase = "choice"
   self.resolveDeadline = nil
   self.forcedPending = false
-  for _, fighter in ipairs(self.fighters) do fighter.choice = nil end
+  for _, fighter in ipairs(self.fighters) do
+    fighter.choice = nil
+    fighter.choiceByPlayer = false
+  end
   self.deadline = (self.choiceTimeout > 0) and (self.now + self.choiceTimeout) or nil
   self:_emit("turn", { amount = self.turn })
   self:_fillForcedChoices()
@@ -1437,6 +1455,15 @@ end
 
 function Battle:_resolveTurn()
   self.phase = "resolving"
+  local changedEvidence = false
+  for _, fighter in ipairs(self.fighters) do
+    if fighter.choice ~= nil and fighter.choiceByPlayer == true
+      and fighter.actedInResolvedTurn ~= true then
+      fighter.actedInResolvedTurn = true
+      changedEvidence = true
+    end
+  end
+  if changedEvidence then self.evidenceRevision = self.evidenceRevision + 1 end
   -- Armed for the rare case resolution does not leave this phase in the same
   -- call -- a throw mid-resolve used to leave the field wedged forever, and
   -- Hub.receive now contains those throws so the clock has to finish the job.
@@ -1479,6 +1506,7 @@ function Battle:_resolveRuns()
         if fighter.side == "a" and fighter.present ~= false then
           fighter.present = false
           fighter.choice = nil
+          self.evidenceRevision = self.evidenceRevision + 1
           self:_emit("run", { slot = fighter.slot, side = fighter.side,
             text = fighter.name, amount = 1 })
         end
@@ -2623,6 +2651,26 @@ function Battle:outcome()
   return self.result
 end
 
+-- Authoritative participation evidence, copied so callers cannot mutate the
+-- simulator. `present` means still seated and connected at observation time.
+-- `acted` records only voluntary choices that crossed a turn-resolution
+-- boundary; cancelled, forced, timeout and NPC choices never enter it. Hubs
+-- intersect these ids with their human member roster before publishing them.
+function Battle:participation()
+  local present, acted = {}, {}
+  for _, fighter in ipairs(self.fighters) do
+    if fighter.present ~= false and fighter.connected then
+      present[#present + 1] = fighter.playerId
+    end
+    if fighter.actedInResolvedTurn == true then
+      acted[#acted + 1] = fighter.playerId
+    end
+  end
+  table.sort(present)
+  table.sort(acted)
+  return { present = present, acted = acted, revision = self.evidenceRevision }
+end
+
 -- ------------------------------------------------------------------
 -- the clock
 -- ------------------------------------------------------------------
@@ -2633,6 +2681,7 @@ function Battle:disconnect(playerId)
   if self.result then return false end
 
   fighter.connected = false
+  self.evidenceRevision = self.evidenceRevision + 1
   fighter.graceEndsAt = self.now + self.reconnectGrace
   self:_emit("wait", { side = fighter.side, text = fighter.name })
   return true
@@ -2649,6 +2698,7 @@ function Battle:reconnect(playerId)
   if fighter.graceEndsAt and self.now >= fighter.graceEndsAt then return false end
 
   fighter.connected = true
+  self.evidenceRevision = self.evidenceRevision + 1
   fighter.graceEndsAt = nil
   self:_emit("reconnect", { side = fighter.side, text = fighter.name })
 
@@ -2716,6 +2766,7 @@ function Battle:tick(nowSeconds)
         local auto = self:_autoChoice(fighter)
         if auto then
           fighter.choice = auto
+          fighter.choiceByPlayer = false
           self:_emit("chose", {
             slot = fighter.slot, side = fighter.side, text = fighter.name,
           })

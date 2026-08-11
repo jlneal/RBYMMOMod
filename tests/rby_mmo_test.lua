@@ -11191,6 +11191,7 @@ end)()
   stubEvents = {}
   local npc = setmetatable({
     sim = fieldOf({ "ann", "bob", false, false }), host = true, mine = 1,
+    battleId = "battle-1", hostId = "ann",
     messages = {}, ranksPoints = false, trainer = { id = "OPP_BUG_CATCHER" },
     game = { data = data, save = { inventory = {}, party = {} } },
   }, { __index = CoopBattle })
@@ -11199,6 +11200,9 @@ end)()
   local started = heard("mod.rby_mmo.coop_battle_started")
   check(started ~= nil, "a co-op battle announces that it started")
   if started then
+    eq(started.battleId, "battle-1",
+      "carrying a stable transport identity beside the mutable battle")
+    eq(started.hostId, "ann", "and naming the transport host")
     eq(started.kind, "npc", "saying what kind of battle it is -- as a word")
     eq(started.fighters, 4, "how many are on the field")
     eq(started.humans, 2, "and how many of them are people")
@@ -11216,6 +11220,10 @@ end)()
   -- The pair: ending is announced too, with the result.
   stubEvents = {}
   npc.result = "win"
+  npc.authoritativeReceipt = {
+    battle = "receipt-1", outcome = "win", reason = "ko",
+    participants = { "ann", "bob" }, acted = { "ann" },
+  }
   npc.onDone = function() end
   CoopBattle.exit(npc)
   local ended = heard("mod.rby_mmo.coop_battle_ended")
@@ -11224,6 +11232,10 @@ end)()
     eq(ended.result, "win", "carrying how it went")
     eq(ended.kind, "npc", "and the same shape as the start, so one listener "
        .. "can read both")
+    eq(ended.receipt.battle, "receipt-1",
+      "and retaining the immutable authoritative receipt for adapters")
+    eq(ended.receipt.acted[1], "ann",
+      "including resolved-turn participation rather than UI state")
   end
 
   -- Against another party: four humans, and `kind` says so. This is the field

@@ -329,6 +329,13 @@ do
   eq(hub.matches[id].reports[fight.ann.client.id], nil,
      "mmo.result about a mediated fight files nothing")
 
+  fight.ann.client.worldState = { world = "shared-world", compatibility = "same",
+    player = "campaign-ann" }
+  fight.bob.client.worldState = { world = "shared-world", compatibility = "same",
+    player = "campaign-bob" }
+  hub.battles[id].campaignOccurrence = "rby:gym:campaign-ann.1"
+  hub.battles[id].campaignDefinition = "0123456789abcdef"
+
   ok(fightItOut(hub, { fight.ann, fight.bob }), "the fight reaches an end")
 
   local outcome = take(fight.ann.peer, Wire.BATTLE_OUTCOME)
@@ -340,6 +347,24 @@ do
   eq(outcome.reason, "ko", "and the ordinary reason is the ordinary word for it")
   eq(outcome.winners[1], fight.ann.client.id, "naming who won")
   eq(outcome.losers[1], fight.bob.client.id, "and who did not")
+  eq(#outcome.participants, 2, "with both connected finishers in the receipt")
+  eq(#outcome.acted, 2, "and both resolved-turn actors in the receipt")
+  eq(outcome.campaignWorld, "shared-world",
+    "the receipt binds one admitted campaign world")
+  eq(outcome.campaignHost, "campaign-ann",
+    "the transport host is translated to its stable campaign actor")
+  eq(outcome.campaignParticipants[1], "campaign-ann",
+    "campaign participants are stable and sorted")
+  eq(outcome.campaignActed[2], "campaign-bob",
+    "resolved action evidence is translated through the same identity map")
+  eq(outcome.campaignGeneration, 1, "the initial host generation is explicit")
+  eq(outcome.campaignHosts[1], "campaign-ann",
+    "the receipt carries the authenticated host history")
+  eq(outcome.campaignOccurrence, "rby:gym:campaign-ann.1",
+    "the receipt binds the content-minted occurrence")
+  eq(outcome.campaignDefinition, "0123456789abcdef",
+    "the receipt binds the local content definition")
+  ok(outcome.campaignRevision >= 2, "the evidence snapshot has a monotonic revision")
 
   eq(hub.battles[id], nil, "the record is forgotten once it is settled")
   eq(fight.ann.client.battleId, nil, "and both players are let out of it")
@@ -846,6 +871,27 @@ do
   local reoffer = take(bobPeer, Wire.COOP_OFFER)
   eq(reoffer and reoffer.battle, "ROUTE_1|WILD",
     "the runner can explicitly rejoin the same encounter")
+
+  ok(hub:queueBattleAdmission(record, bob, { battle = record.id, side = "a",
+    mons = { mon({ species = "ALLY" }) } }) == false,
+    "the former runner queues behind the Wild's automatic choice")
+  ok(record.sim:submitChoice(ann.id, { action = "fight", move = 0 }),
+    "the survivor closes that already-open turn")
+  hub:flushBattle(record)
+  eq(record.sim.byId[bob.id].present, true,
+    "the queued runner rejoins at the next pristine boundary")
+  ok(record.sim:submitChoice(ann.id, { action = "run" }),
+    "the original host may later leave independently")
+  ok(record.sim:submitChoice(bob.id, { action = "fight", move = 0 }),
+    "the surviving player carries the encounter")
+  if record.sim:_owes(record.sim.byId[record.npcIds[1]]) then
+    ok(record.sim:autoPick(record.npcIds[1]), "the Wild closes the transfer turn")
+  end
+  hub:flushBattle(record)
+  eq(record.hostId, bob.id, "encounter authority transfers to the survivor")
+  eq(record.hostGeneration, 2, "host transfer advances the monotonic generation")
+  eq(record.hostHistory[1], ann.id, "host history begins with original authority")
+  eq(record.hostHistory[2], bob.id, "host transfer is reconstructable from history")
 end
 
 do

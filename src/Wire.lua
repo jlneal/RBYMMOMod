@@ -20,6 +20,7 @@
 local need = ...
 local Config = need("Config")
 local Effects = need("BattleSim/Effects")
+local CampaignIdentity = need("CampaignIdentity")
 
 local M = {}
 
@@ -806,8 +807,25 @@ function M.coopField(raw)
                  badges = M.badges(slot.badges) }
   end
 
+  local trainerPartyIndex
+  if raw.trainerPartyIndex ~= nil then
+    trainerPartyIndex = M.int(raw.trainerPartyIndex, 1, 255)
+    if not trainerPartyIndex then return nil end
+  end
+  local campaignOccurrence, campaignDefinition
+  if raw.campaignOccurrence ~= nil or raw.campaignDefinition ~= nil then
+    campaignOccurrence = CampaignIdentity.identifier(raw.campaignOccurrence, 96)
+    campaignDefinition = type(raw.campaignDefinition) == "string"
+      and #raw.campaignDefinition == 16
+      and raw.campaignDefinition:match("^[0-9a-f]+$") and raw.campaignDefinition or nil
+    if not (campaignOccurrence and campaignDefinition) then return nil end
+  end
   return { slots = slots, host = M.id(raw.host),
            trainer = M.id(raw.trainer),
+           trainerClass = M.id(raw.trainerClass),
+           trainerPartyIndex = trainerPartyIndex,
+           campaignOccurrence = campaignOccurrence,
+           campaignDefinition = campaignDefinition,
            rewardExp = raw.rewardExp ~= false,
            rewardMoney = raw.rewardMoney ~= false,
            flexibleWild = flexibleWild }
@@ -1629,6 +1647,33 @@ local function idList(raw, max)
   return out
 end
 
+-- Evidence lists differ from rosters and winner lists in one useful way: an
+-- empty list is meaningful. A battle can end before anybody contributes a
+-- voluntary turn, and a simultaneous disconnect can leave nobody present.
+local function evidenceIdList(raw, max)
+  if type(raw) ~= "table" or #raw > max then return nil end
+  local out = {}
+  for _, entry in ipairs(raw) do
+    local id = M.id(entry)
+    if not id then return nil end
+    out[#out + 1] = id
+  end
+  return out
+end
+
+local function campaignIdList(raw, max, allowEmpty)
+  if type(raw) ~= "table" or #raw > max or (not allowEmpty and #raw == 0) then
+    return nil
+  end
+  local out, previous = {}, nil
+  for _, entry in ipairs(raw) do
+    local id = CampaignIdentity.identifier(entry, 64)
+    if not id or (previous and previous >= id) then return nil end
+    out[#out + 1], previous = id, id
+  end
+  return out
+end
+
 -- How the fight ended, from the only party that knows.
 --
 -- **This replaces the two-client vote.**  mmo.result exists because neither
@@ -1660,6 +1705,56 @@ function M.battleOutcome(raw)
   if raw.reason ~= nil then
     out.reason = M.battleReason(raw.reason)
     if not out.reason then return nil end
+  end
+  if raw.participants ~= nil then
+    out.participants = evidenceIdList(raw.participants, Config.COOP_FIGHTERS)
+    if not out.participants then return nil end
+  end
+  if raw.acted ~= nil then
+    out.acted = evidenceIdList(raw.acted, Config.COOP_FIGHTERS)
+    if not out.acted then return nil end
+  end
+  local hasCampaign = raw.campaignWorld ~= nil or raw.campaignHost ~= nil
+    or raw.campaignParticipants ~= nil or raw.campaignActed ~= nil
+    or raw.campaignGeneration ~= nil or raw.campaignRevision ~= nil
+    or raw.campaignHosts ~= nil or raw.campaignOccurrence ~= nil
+    or raw.campaignDefinition ~= nil
+  if hasCampaign then
+    local world = CampaignIdentity.identifier(raw.campaignWorld, 64)
+    local host = CampaignIdentity.identifier(raw.campaignHost, 64)
+    local participants = campaignIdList(raw.campaignParticipants,
+      Config.COOP_FIGHTERS, false)
+    local acted = campaignIdList(raw.campaignActed, Config.COOP_FIGHTERS, true)
+    local generation = M.int(raw.campaignGeneration, 1, 1000000)
+    local revision = M.int(raw.campaignRevision, 1, 1000000000)
+    local hosts = {}
+    if type(raw.campaignHosts) ~= "table" or #raw.campaignHosts < 1
+      or #raw.campaignHosts > 16 then return nil end
+    for i, entry in ipairs(raw.campaignHosts) do
+      local id = CampaignIdentity.identifier(entry, 64)
+      if not id or (i > 1 and hosts[i - 1] == id) then return nil end
+      hosts[i] = id
+    end
+    local present = {}
+    for _, id in ipairs(participants or {}) do present[id] = true end
+    if not (world and host and participants and acted and generation and revision
+      and present[host] and #hosts == generation and hosts[#hosts] == host) then
+      return nil
+    end
+    for _, id in ipairs(acted) do if not present[id] then return nil end end
+    out.campaignWorld, out.campaignHost = world, host
+    out.campaignParticipants, out.campaignActed = participants, acted
+    out.campaignHosts = hosts
+    out.campaignGeneration, out.campaignRevision = generation, revision
+    if raw.campaignOccurrence ~= nil or raw.campaignDefinition ~= nil then
+      local occurrence = CampaignIdentity.identifier(raw.campaignOccurrence, 96)
+      local definition = type(raw.campaignDefinition) == "string"
+        and #raw.campaignDefinition == 16
+        and raw.campaignDefinition:match("^[0-9a-f]+$")
+        and raw.campaignDefinition or nil
+      if not (occurrence and definition) then return nil end
+      out.campaignOccurrence, out.campaignDefinition = occurrence, definition
+    end
   end
   -- Optional catch sheet: battleMon-shaped snapshot for clients that did not
   -- keep the wild mon locally. Absent is fine; present-and-bad refuses.

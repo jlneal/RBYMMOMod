@@ -599,6 +599,10 @@ function M:onTrainerBattle(game, state, mapId)
   local lead = state.enemyParty and state.enemyParty[1]
   local key = M.battleKey(mapId, state.oppClass,
     lead and lead.species, lead and lead.level)
+  local campaign
+  if type(self.battleContext) == "function" then
+    campaign = self.battleContext(state, mapId, key)
+  end
 
   self.encounter = {
     battle = key,
@@ -607,6 +611,7 @@ function M:onTrainerBattle(game, state, mapId)
     -- The engine's own battle, held so the co-op path can hand it its result.
     engine = state,
     game = game,
+    campaign = campaign,
   }
 
   if self:offerMatches(key) then
@@ -723,6 +728,7 @@ function M:beginWildCoop()
     label = encounter.label,
     map = encounter.map,
     engine = encounter.engine,
+    campaign = encounter.campaign,
     game = encounter.game,
     kind = "wild",
     mode = "coop_wild",
@@ -851,6 +857,7 @@ function M:beginWait()
     -- prompt that started it and the co-op path still needs something to hand
     -- its result to.
     engine = encounter.engine,
+    campaign = encounter.campaign,
     game = encounter.game,
     clock = 0,
   }
@@ -1424,6 +1431,7 @@ function M:onJoined(game, msg)
     battle = waiting.battle,
     label = waiting.label,
     engine = waiting.engine,
+    campaign = waiting.campaign,
     trainer = waiting.trainer,
     wildCatchMon = waiting.wildCatchMon or M.wildMonOf(waiting.engine),
     wildMate = waiting.wildMate,
@@ -1896,6 +1904,10 @@ function M:buildField(game, battle, humans)
     slots = slots,
     host = plan.hostId,
     trainer = trainer and trainer.id,
+    trainerClass = plan.engine and plan.engine.oppClass,
+    trainerPartyIndex = plan.engine and (plan.engine.partyIndex or 1),
+    campaignOccurrence = plan.campaign and plan.campaign.occurrence,
+    campaignDefinition = plan.campaign and plan.campaign.definition,
     -- Human-vs-human battles never mint ordinary trainer rewards. Against an
     -- NPC, the host's session policy is copied into the authoritative field
     -- so every client applies the same answer.
@@ -2065,6 +2077,11 @@ function M:startBattle(game, field)
     -- what the AI reads a class off, and its aiUses is the allowance the
     -- engine had already computed for it.
     trainer = trainer,
+    trainerClass = field.trainerClass or (engine and engine.oppClass),
+    trainerPartyIndex = field.trainerPartyIndex
+      or (engine and (engine.partyIndex or 1)),
+    campaignOccurrence = field.campaignOccurrence,
+    campaignDefinition = field.campaignDefinition,
     aiUses = engine and engine.aiUses,
     trainerPic = trainerPic,
     -- Substituted by whoever started the battle, and lost with it unless it is

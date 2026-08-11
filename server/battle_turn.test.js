@@ -1104,3 +1104,54 @@ test('a second human can independently catch a dynamically admitted second Wild'
   assert.deepStrictEqual(outcome.catches.map((entry) => entry.catcher), ['p1', 'p2']);
   assert.strictEqual(resolved.filter((event) => event.t === 'caught').length, 2);
 });
+
+test('participation records resolved player choices separately from final presence', () => {
+  const evidenceBattle = (twoMons = false) => build({
+    id: twoMons ? 'evidence-replace' : 'evidence', mode: '1v1', seed: 7,
+    choiceTimeout: 1, reconnectGrace: 60,
+    sides: {
+      a: [{ playerId: 'p1', name: 'Ann', mons: [
+        mn({ species: 'Alpha', maxHp: 200, moves: [mv('tap', 10, 255, 0)] }),
+        ...(twoMons
+          ? [mn({ species: 'Gamma', maxHp: 200, moves: [mv('tap', 10, 255, 0)] })]
+          : []),
+      ] }],
+      b: [{ playerId: 'p2', name: 'Bob', mons: [
+        mn({ species: 'Beta', maxHp: 200, moves: [mv('tap', 10, 255, 0)] }),
+      ] }],
+    },
+  });
+
+  const cancelled = evidenceBattle();
+  cancelled.drainEvents();
+  assert.strictEqual(cancelled.submitChoice('p1', { action: 'fight', move: 0 }), true);
+  assert.strictEqual(cancelled.submitChoice('p1', { action: 'cancel' }), true);
+  cancelled.tick(1);
+  assert.deepStrictEqual(cancelled.participation().acted, [],
+    'cancelled and timeout-selected choices do not count');
+
+  const resolved = evidenceBattle();
+  resolved.drainEvents();
+  resolved.submitChoice('p1', { action: 'fight', move: 0 });
+  resolved.tick(1);
+  assert.deepStrictEqual(resolved.participation(), {
+    present: ['p1', 'p2'], acted: ['p1'], revision: 2,
+  });
+  resolved.disconnect('p1');
+  assert.deepStrictEqual(resolved.participation(), {
+    present: ['p2'], acted: ['p1'], revision: 3,
+  }, 'disconnect changes final presence without erasing prior action');
+  resolved.reconnect('p1');
+  assert.deepStrictEqual(resolved.participation().present, ['p1', 'p2']);
+
+  const replacing = evidenceBattle(true);
+  replacing.drainEvents();
+  const p1 = replacing.byId.get('p1');
+  p1.mons[0].hp = 0;
+  p1.active = null;
+  p1.mustReplace = true;
+  replacing.submitChoice('p1', { action: 'switch', slot: 1 });
+  replacing.autoPick('p2');
+  assert.deepStrictEqual(replacing.participation().acted, [],
+    'forced replacement is not a turn action');
+});

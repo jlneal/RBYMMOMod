@@ -12,6 +12,7 @@ local Config = need("Config")
 local Wire = need("Wire")
 local CampaignWire = need("CampaignWire")
 local CampaignStateBridge = need("CampaignStateBridge")
+local CampaignIdentity = need("CampaignIdentity")
 local Sha256 = need("Sha256")
 local Transport = need("Transport")
 local Roster = need("Roster")
@@ -46,6 +47,36 @@ local transport
 -- Optional transport only. The independent campaign_state mod owns its save,
 -- schema, reducers, projection barrier, and enrollment capabilities.
 local campaignBridge
+local battleContextProviders = {}
+
+local function battleContext(state, mapId, battleKey)
+  local selected
+  local ids = {}
+  for id in pairs(battleContextProviders) do ids[#ids + 1] = id end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    local called, raw = pcall(battleContextProviders[id], state, mapId, battleKey)
+    if called and raw ~= nil then
+      local occurrence = type(raw) == "table"
+        and CampaignIdentity.identifier(raw.occurrence, 96) or nil
+      local definition = type(raw) == "table" and raw.definition or nil
+      if not occurrence or type(definition) ~= "string" or #definition ~= 16
+        or not definition:match("^[0-9a-f]+$") then
+        mod.log:warn("battle context provider %s returned invalid context", id)
+        return nil
+      end
+      if selected and (selected.occurrence ~= occurrence
+        or selected.definition ~= definition) then
+        mod.log:warn("battle context providers disagreed; no context was attached")
+        return nil
+      end
+      selected = { occurrence = occurrence, definition = definition }
+    elseif not called then
+      mod.log:warn("battle context provider %s failed (%s)", id, tostring(raw))
+    end
+  end
+  return selected
+end
 
 local function campaignBridgeId(purpose)
   local raw, why = Hub.Entropy.shared:bytes(16)
@@ -140,6 +171,7 @@ end, function()
 end, function()
   return sessionOffMapJoinEnabled
 end)
+coop.battleContext = battleContext
 -- Co-op can be mid-handoff with no screen yet (running/state set, stack
 -- still overworld). Sessions asks this so a 1v1 invite is refused there
 -- the same way a wild battle on the stack is.
@@ -2493,6 +2525,25 @@ function M.install()
   -- by opening a menu.
   mod.exports.servers = function() return servers:list() end
   mod.exports.players = function() return ctx.roster:sorted() end
+  mod.exports.registerBattleContextProvider = function(id, provider)
+    id = CampaignIdentity.identifier(id, 32)
+    if not id or type(provider) ~= "function" then
+      return nil, "battle context provider is invalid"
+    end
+    local count = 0
+    for key in pairs(battleContextProviders) do
+      count = count + (key == id and 0 or 1)
+    end
+    if count >= 8 then return nil, "too many battle context providers" end
+    battleContextProviders[id] = provider
+    return true
+  end
+  mod.exports.unregisterBattleContextProvider = function(id)
+    id = CampaignIdentity.identifier(id, 32)
+    if not id or not battleContextProviders[id] then return false end
+    battleContextProviders[id] = nil
+    return true
+  end
   mod.exports.inviteSharedWorld = function(to)
     if not campaignBridge then return nil, "campaign_state transport is unavailable" end
     return campaignBridge:invite(to)

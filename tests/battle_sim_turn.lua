@@ -2967,7 +2967,62 @@ do
 end
 
 -- ------------------------------------------------------------------
--- 14. the vocabulary, on everything every scenario above produced
+-- 14. authoritative participation evidence
+-- ------------------------------------------------------------------
+
+do
+  local function evidenceBattle(twoMons)
+    local mons = { mon({ species = "Alpha", maxHp = 200,
+      moves = { move({ id = "tap", power = 10 }) } }) }
+    if twoMons then mons[2] = mon({ species = "Gamma", maxHp = 200,
+      moves = { move({ id = "tap", power = 10 }) } }) end
+    local battle = battleOf({ choiceTimeout = 1, sides = {
+      a = { { playerId = "p1", name = "Ann", mons = mons } },
+      b = { { playerId = "p2", name = "Bob", mons = {
+        mon({ species = "Beta", maxHp = 200,
+          moves = { move({ id = "tap", power = 10 }) } }),
+      } } },
+    } })
+    drain(battle)
+    return battle
+  end
+
+  local cancelled = evidenceBattle()
+  ok(cancelled:submitChoice("p1", { action = "fight", move = 0 }),
+    "a voluntary choice can be staged")
+  ok(cancelled:submitChoice("p1", { action = "cancel" }),
+    "the staged choice can be cancelled")
+  cancelled:tick(1)
+  local cancelledProof = cancelled:participation()
+  eq(#cancelledProof.acted, 0,
+    "cancelled and timeout-selected choices do not prove participation")
+
+  local resolved = evidenceBattle()
+  resolved:submitChoice("p1", { action = "fight", move = 0 })
+  resolved:tick(1)
+  local resolvedProof = resolved:participation()
+  eq(#resolvedProof.acted, 1, "one voluntary resolved choice proves one actor")
+  eq(resolvedProof.acted[1], "p1", "the authoritative actor is the chooser")
+  eq(#resolvedProof.present, 2, "both connected seats are present")
+  resolved:disconnect("p1")
+  local awayProof = resolved:participation()
+  eq(#awayProof.present, 1, "a disconnected actor is not present at the end")
+  eq(awayProof.present[1], "p2", "the connected partner remains present")
+  eq(awayProof.acted[1], "p1", "disconnect does not erase earlier action evidence")
+  resolved:reconnect("p1")
+  eq(#resolved:participation().present, 2, "rejoin restores final presence")
+
+  local replacing = evidenceBattle(true)
+  local p1 = replacing.byId.p1
+  p1.mons[1].hp, p1.active, p1.mustReplace = 0, nil, true
+  replacing:submitChoice("p1", { action = "switch", slot = 1 })
+  replacing:autoPick("p2")
+  eq(#replacing:participation().acted, 0,
+    "a forced replacement is not a turn action")
+end
+
+-- ------------------------------------------------------------------
+-- 15. the vocabulary, on everything every scenario above produced
 -- ------------------------------------------------------------------
 
 do
@@ -2986,7 +3041,7 @@ do
 end
 
 -- ------------------------------------------------------------------
--- 15. the mirror, when Wire is reachable
+-- 16. the mirror, when Wire is reachable
 -- ------------------------------------------------------------------
 
 do

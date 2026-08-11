@@ -13,6 +13,7 @@
 
 const TEXT_OK = /[^A-Za-z0-9 .,!?'\-:;()/]/g;
 const Effects = require('./battle/Effects');
+const { cleanProgressionId } = require('./campaign-sanitize');
 
 function cleanText(value, limit) {
   if (typeof value !== 'string') return null;
@@ -1170,6 +1171,80 @@ function cleanBattleOutcome(raw) {
     const reason = cleanBattleReason(raw.reason);
     if (!reason) return null;
     result.reason = reason;
+  }
+  if (raw.participants !== undefined && raw.participants !== null) {
+    if (!Array.isArray(raw.participants) || raw.participants.length > COOP_FIGHTERS) return null;
+    result.participants = [];
+    for (const entry of raw.participants) {
+      const id = cleanId(entry);
+      if (!id) return null;
+      result.participants.push(id);
+    }
+  }
+  if (raw.acted !== undefined && raw.acted !== null) {
+    if (!Array.isArray(raw.acted) || raw.acted.length > COOP_FIGHTERS) return null;
+    result.acted = [];
+    for (const entry of raw.acted) {
+      const id = cleanId(entry);
+      if (!id) return null;
+      result.acted.push(id);
+    }
+  }
+  const hasCampaign = raw.campaignWorld !== undefined
+    || raw.campaignHost !== undefined || raw.campaignParticipants !== undefined
+    || raw.campaignActed !== undefined || raw.campaignGeneration !== undefined
+    || raw.campaignRevision !== undefined || raw.campaignHosts !== undefined
+    || raw.campaignOccurrence !== undefined || raw.campaignDefinition !== undefined;
+  if (hasCampaign) {
+    const world = cleanProgressionId(raw.campaignWorld, 64);
+    const host = cleanProgressionId(raw.campaignHost, 64);
+    const generation = cleanInt(raw.campaignGeneration, 1, 1000000);
+    const revision = cleanInt(raw.campaignRevision, 1, 1000000000);
+    if (!world || !host || generation === null || revision === null
+        || !Array.isArray(raw.campaignParticipants)
+        || !Array.isArray(raw.campaignActed)
+        || raw.campaignParticipants.length < 1
+        || raw.campaignParticipants.length > COOP_FIGHTERS
+        || raw.campaignActed.length > COOP_FIGHTERS
+        || !Array.isArray(raw.campaignHosts) || raw.campaignHosts.length < 1
+        || raw.campaignHosts.length > 16) return null;
+    const cleanSorted = (values) => {
+      const out = [];
+      let previous = null;
+      for (const value of values) {
+        const id = cleanProgressionId(value, 64);
+        if (!id || (previous !== null && previous >= id)) return null;
+        out.push(id); previous = id;
+      }
+      return out;
+    };
+    const participants = cleanSorted(raw.campaignParticipants);
+    const acted = cleanSorted(raw.campaignActed);
+    const hosts = [];
+    for (const value of raw.campaignHosts) {
+      const id = cleanProgressionId(value, 64);
+      if (!id || (hosts.length && hosts[hosts.length - 1] === id)) return null;
+      hosts.push(id);
+    }
+    if (!participants || !acted || !participants.includes(host)
+        || acted.some((id) => !participants.includes(id))
+        || hosts.length !== generation || hosts[hosts.length - 1] !== host) return null;
+    result.campaignWorld = world;
+    result.campaignHost = host;
+    result.campaignParticipants = participants;
+    result.campaignActed = acted;
+    result.campaignHosts = hosts;
+    result.campaignGeneration = generation;
+    result.campaignRevision = revision;
+    if (raw.campaignOccurrence !== undefined || raw.campaignDefinition !== undefined) {
+      const occurrence = cleanProgressionId(raw.campaignOccurrence, 96);
+      const definition = raw.campaignDefinition;
+      if (!occurrence || typeof definition !== 'string' || !/^[0-9a-f]{16}$/.test(definition)) {
+        return null;
+      }
+      result.campaignOccurrence = occurrence;
+      result.campaignDefinition = definition;
+    }
   }
   if (raw.caught !== undefined && raw.caught !== null) {
     const caught = cleanBattleMon(raw.caught);

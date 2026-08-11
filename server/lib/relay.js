@@ -1,5 +1,7 @@
 'use strict';
 
+const { cleanProgressionId } = require('./campaign-sanitize');
+
 /*
  * The hub, as pure logic.
  *
@@ -937,6 +939,13 @@ handlers['mmo.coop_relay'] = (relay, client, msg) => {
       // coopField is already bounded by payloadOk on this internal bootstrap;
       // the client runs the stricter field sanitizer before constructing it.
       mediated.packedField = msg.payload.field;
+      const field = msg.payload.field;
+      const occurrence = field && cleanProgressionId(field.campaignOccurrence, 96);
+      const definition = field && field.campaignDefinition;
+      if (occurrence && typeof definition === 'string' && /^[0-9a-f]{16}$/.test(definition)) {
+        mediated.campaignOccurrence = occurrence;
+        mediated.campaignDefinition = definition;
+      }
     } else if (msg.payload.t === 'wild_mate' && client.id === mediated.hostId
         && Array.isArray(msg.payload.party) && Array.isArray(msg.payload.mons)) {
       const mons = [];
@@ -2583,6 +2592,8 @@ class Relay {
       id,
       mode,
       hostId,
+      hostGeneration: 1,
+      hostHistory: [hostId],
       memberIds,
       eligibleIds: new Set(p.eligibleIds || memberIds),
       sides: {
@@ -2731,6 +2742,12 @@ class Relay {
     if (group) group.members = group.members.filter((id) => id !== clientId);
     client.battleId = null;
     client.coopBattleId = null;
+    if (record.hostId !== owner.id) {
+      record.hostId = owner.id;
+      record.hostGeneration = (record.hostGeneration || 1) + 1;
+      if (!Array.isArray(record.hostHistory)) record.hostHistory = [];
+      record.hostHistory.push(owner.id);
+    }
     owner.coopOffer = {
       battle: encounter.battle, label: encounter.label, map: encounter.map,
       mode: 'coop_wild', plan: record.id, startedAt: this.now(),
@@ -3178,6 +3195,68 @@ class Relay {
     if (outcome.reason) payload.reason = outcome.reason;
     if (outcome.caught) payload.caught = outcome.caught;
     if (outcome.catcher) payload.catcher = outcome.catcher;
+    if (outcome.catches) payload.catches = outcome.catches;
+
+    // Only the simulator knows which accepted choices crossed a real resolve
+    // boundary. Intersect with the hub's human roster so NPC seats never enter
+    // campaign participation evidence.
+    const evidence = record.sim && record.sim.participation();
+    const members = new Set(record.memberIds || []);
+    payload.participants = ((evidence && evidence.present) || [])
+      .filter((id) => members.has(id)).sort();
+    payload.acted = ((evidence && evidence.acted) || [])
+      .filter((id) => members.has(id)).sort();
+
+    // Attach stable Campaign actors only when every connected finisher has an
+    // admitted identity in one compatible world. Partial translation fails
+    // closed by omitting the entire campaign block.
+    const campaign = new Map();
+    const seen = new Map();
+    let campaignWorld = null;
+    let compatibility = null;
+    const hostHistory = record.hostHistory || [record.hostId];
+    let complete = payload.participants.length > 0 && hostHistory.length <= 16;
+    const mapCampaignActor = (id) => {
+      if (campaign.has(id)) return true;
+      const client = this.clients.get(id);
+      const state = client && client.worldState;
+      if (!state || typeof state.player !== 'string' || typeof state.world !== 'string'
+          || typeof state.compatibility !== 'string'
+          || (seen.has(state.player) && seen.get(state.player) !== id)
+          || (campaignWorld !== null
+            && (state.world !== campaignWorld || state.compatibility !== compatibility))) {
+        return false;
+      }
+      campaignWorld = state.world;
+      compatibility = state.compatibility;
+      seen.set(state.player, id);
+      campaign.set(id, state.player);
+      return true;
+    };
+    for (const id of payload.participants) {
+      if (!mapCampaignActor(id)) { complete = false; break; }
+    }
+    if (complete) {
+      for (const id of hostHistory) {
+        if (!mapCampaignActor(id)) { complete = false; break; }
+      }
+    }
+    const campaignHost = campaign.get(record.hostId);
+    if (complete && campaignHost) {
+      const present = new Set(payload.participants);
+      payload.campaignWorld = campaignWorld;
+      payload.campaignHost = campaignHost;
+      payload.campaignGeneration = record.hostGeneration || 1;
+      payload.campaignRevision = (evidence && evidence.revision) || 1;
+      payload.campaignParticipants = payload.participants.map((id) => campaign.get(id)).sort();
+      payload.campaignActed = payload.acted.filter((id) => present.has(id))
+        .map((id) => campaign.get(id)).sort();
+      payload.campaignHosts = hostHistory.map((id) => campaign.get(id));
+      if (record.campaignOccurrence && record.campaignDefinition) {
+        payload.campaignOccurrence = record.campaignOccurrence;
+        payload.campaignDefinition = record.campaignDefinition;
+      }
+    }
     this.broadcastBattle(record, 'mmo.battle_outcome', payload);
 
     // Rank from the intermediator alone -- no dual mmo.result vote.
