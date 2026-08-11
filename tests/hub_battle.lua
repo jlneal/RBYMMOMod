@@ -739,7 +739,7 @@ do
   ok(record.sim ~= nil, "and the intermediator is running")
 end
 
--- ------- coop_wild: two humans, one wild seat; 2-human gate; catcher on catch
+-- ------- coop_wild: one-or-two humans, one wild seat; catcher on catch
 
 do
   local hub = Hub.new({ maxPlayers = 4 })
@@ -765,8 +765,42 @@ do
 
   local record = hub:openMediatedBattle("cw-2", {
     mode = "coop_wild", hostId = ann.id, memberIds = { ann.id },
+    eligibleIds = { ann.id },
   })
-  eq(record, nil, "coop_wild refuses without exactly two humans")
+  ok(record ~= nil, "coop_wild may begin with one human")
+  eq(#record.sides.a, 1, "the second ally seat begins vacant")
+end
+
+do
+  local hub = Hub.new({ maxPlayers = 4 })
+  hub.forceBattleSeed = 1
+  local ann = join(hub, "ANN")
+  local bob = join(hub, "BOB")
+  local record = hub:openMediatedBattle("cw-flex", {
+    mode = "coop_wild", hostId = ann.id, memberIds = { ann.id },
+    eligibleIds = { ann.id, bob.id },
+  })
+  hub:fillBattleParty(record, ann, {
+    battle = "cw-flex", side = "a", mons = { mon() },
+  })
+  hub:fillBattleParty(record, ann, {
+    battle = "cw-flex", side = "b", mons = { mon({ species = "WILD" }) },
+  })
+  record.ruleset = { chart = CHART }
+  ok(hub:tryStartSim(record), "a one-human flexible Wild sim starts immediately")
+  record.sim:drainEvents()
+  ok(record.sim:submitChoice(ann.id, { action = "fight", move = 0 }),
+    "the host closes the prefilled opening turn")
+  ok(record.sim:submitChoice(ann.id, { action = "fight", move = 0 }),
+    "the host commits on the next turn before the late join arrives")
+  ok(hub:queueBattleAdmission(record, bob, {
+    battle = "cw-flex", side = "a", mons = { mon({ species = "ALLY" }) },
+  }) == false, "admission queues after a committed choice")
+  ok(record.pendingAdmissions[bob.id], "the queued admission is retained")
+  hub:flushBattle(record)
+  eq(record.pendingAdmissions[bob.id], nil, "the next clean boundary admits it")
+  eq(record.sides.a[2], bob.id, "the admitted player joins side a")
+  eq(record.sim.byId[bob.id].slot, 1, "and receives the stable second field slot")
 end
 
 do

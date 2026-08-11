@@ -1286,8 +1286,8 @@ function M:openMediatedBattle(id, plan)
   -- Accept coop_wild explicitly so seating works before Turn.MODES gains it (T3).
   local mode = (Turn.MODES[plan.mode] or plan.mode == "coop_wild") and plan.mode
     or ((#memberIds <= 2) and "1v1" or "coop_pvp")
-  -- coop_wild is a 2v1 contract (exactly two humans vs one wild seat).
-  if mode == "coop_wild" and #memberIds ~= 2 then return nil end
+  -- Flexible coop_wild starts as 1v1 and may admit the second human later.
+  if mode == "coop_wild" and (#memberIds < 1 or #memberIds > 2) then return nil end
   local hostId = plan.hostId or memberIds[1]
   local npcIds = nil
   if mode == "coop_npc" then
@@ -1331,6 +1331,7 @@ function M:openMediatedBattle(id, plan)
     mode = mode,
     hostId = hostId,
     memberIds = memberIds,
+    eligibleIds = {},
     sides = { a = copy(sides.a), b = copy(sides.b) },
     npcIds = npcIds,
     ruleset = nil,
@@ -1338,14 +1339,85 @@ function M:openMediatedBattle(id, plan)
     bags = {},         -- player id -> { [itemId] = count } from party.bag
     bagHold = {},      -- player id -> itemId held until turn resolves
     sim = nil,
+    pendingAdmissions = {},
     settled = false,
   }
+  for _, eligibleId in ipairs(plan.eligibleIds or memberIds) do
+    if type(eligibleId) == "string" then record.eligibleIds[eligibleId] = true end
+  end
   self.battles[id] = record
   for _, memberId in ipairs(memberIds) do
     local member = self.clients[memberId]
     if member then member.battleId = id end
   end
   return record
+end
+
+-- Build the exact fighter sheet Turn.create / Turn:admit consumes.
+function M:battleFighter(record, seat)
+  local party = record and record.parties[seat]
+  if not party then return nil end
+  local client = self.clients[seat]
+  record.bags = record.bags or {}
+  if not record.bags[seat] and self:isNpcSeat(record, seat) then
+    record.bags[seat] = self:cloneBagMap(Turn.DEFAULT_NPC_BAG)
+  end
+  local bag = record.bags[seat]
+  return {
+    playerId = seat,
+    name = (client and client.name)
+      or (self:isNpcSeat(record, seat) and "TRAINER" or seat),
+    mons = party.mons,
+    badges = party.badges,
+    bag = bag and self:cloneBagMap(bag) or nil,
+  }
+end
+
+-- Queue a first admission while a choice is already committed. The party is
+-- sanitized before this method is called and retained exactly once; later
+-- attempts cannot replace it while waiting for the next clean boundary.
+function M:queueBattleAdmission(record, client, party)
+  if not (record and client and party) or record.mode ~= "coop_wild"
+     or not record.sim or record.settled then return false end
+  if not record.eligibleIds[client.id] then return false end
+  if record.sim.byId[client.id] and record.sim.byId[client.id].present ~= false then
+    return false
+  end
+  if not record.parties[client.id] then
+    record.parties[client.id] = party
+    record.bags[client.id] = self:bagMap(party.bag)
+  end
+  record.pendingAdmissions[client.id] = true
+  return self:applyBattleAdmissions(record)
+end
+
+function M:applyBattleAdmissions(record)
+  if not (record and record.sim and record.sim:canChangeSeats()) then return false end
+  local ids = {}
+  for clientId in pairs(record.pendingAdmissions or {}) do ids[#ids + 1] = clientId end
+  table.sort(ids)
+  for _, clientId in ipairs(ids) do
+    local fighter = self:battleFighter(record, clientId)
+    if fighter and record.sim:admit("a", fighter) then
+      record.pendingAdmissions[clientId] = nil
+      local known = false
+      for _, id in ipairs(record.memberIds) do if id == clientId then known = true end end
+      if not known then
+        record.memberIds[#record.memberIds + 1] = clientId
+        record.sides.a[#record.sides.a + 1] = clientId
+      end
+      local client = self.clients[clientId]
+      if client then client.battleId = record.id; client.coopBattleId = record.id end
+      local group = self.coopBattles[record.id]
+      if group then
+        local inGroup = false
+        for _, id in ipairs(group.members) do if id == clientId then inGroup = true end end
+        if not inGroup then group.members[#group.members + 1] = clientId end
+      end
+      return true
+    end
+  end
+  return false
 end
 
 -- Is this seat one of the trainer's rather than a player's?
@@ -1531,30 +1603,10 @@ function M:tryStartSim(record)
     if not record.parties[seat] then return false end
   end
 
-  local function fighterOf(seat)
-    local party = record.parties[seat]
-    if not party then return nil end
-    local client = self.clients[seat]
-    -- Seed NPC seats with a gym-style kit when the host uploaded no bag.
-    record.bags = record.bags or {}
-    if not record.bags[seat] and self:isNpcSeat(record, seat) then
-      record.bags[seat] = self:cloneBagMap(Turn.DEFAULT_NPC_BAG)
-    end
-    local bag = record.bags[seat]
-    return {
-      playerId = seat,
-      name = (client and client.name)
-        or (self:isNpcSeat(record, seat) and "TRAINER" or seat),
-      mons = party.mons,
-      badges = party.badges,
-      bag = bag and self:cloneBagMap(bag) or nil,
-    }
-  end
-
   local function roster(seats)
     local out = {}
     for _, seat in ipairs(seats or {}) do
-      local fighter = fighterOf(seat)
+      local fighter = self:battleFighter(record, seat)
       if fighter then out[#out + 1] = fighter end
     end
     return out
@@ -1653,6 +1705,10 @@ function M:fillNpcChoices(record)
     for _, seat in ipairs(seats) do
       if record.sim:autoPick(seat) then any, filed = true, true end
     end
+    -- autoPick may have closed the old turn and opened the pristine boundary
+    -- a queued human is waiting for. Admit before pre-filing the NPC's choice
+    -- on that new turn, or the boundary would be skipped forever.
+    if self:applyBattleAdmissions(record) then break end
     if not any then break end
   end
   return filed
@@ -1677,7 +1733,9 @@ function M:flushBattle(record)
   -- this same pass or nothing else would send them until somebody else spoke.
   -- Nothing here calls back into this function, so the two cannot chase each
   -- other.
+  self:applyBattleAdmissions(record)
   self:fillNpcChoices(record)
+  self:applyBattleAdmissions(record)
   -- Fighter bags are authoritative after resolve (Turn spends on item use,
   -- including NPC auto-pick). Sync the hub sheet and drop holds so we never
   -- double-spend with commitBagHolds.

@@ -2465,8 +2465,8 @@ class Relay {
         && mode !== 'wild' && mode !== 'coop_wild') {
       mode = memberIds.length <= 2 ? '1v1' : 'coop_pvp';
     }
-    // coop_wild is a 2v1 contract (exactly two humans vs one wild seat).
-    if (mode === 'coop_wild' && memberIds.length !== 2) return null;
+    // Flexible coop_wild starts as 1v1 and may admit the second human later.
+    if (mode === 'coop_wild' && (memberIds.length < 1 || memberIds.length > 2)) return null;
 
     const hostId = p.hostId || memberIds[0];
     let npcIds = null;
@@ -2498,6 +2498,7 @@ class Relay {
       mode,
       hostId,
       memberIds,
+      eligibleIds: new Set(p.eligibleIds || memberIds),
       sides: {
         a: (sides.a || []).slice(),
         b: (sides.b || []).slice(),
@@ -2508,6 +2509,7 @@ class Relay {
       bags: new Map(),
       bagHold: Object.create(null),
       sim: null,
+      pendingAdmissions: new Set(),
       settled: false,
     };
     this.battles.set(id, record);
@@ -2516,6 +2518,61 @@ class Relay {
       if (member) member.battleId = id;
     }
     return record;
+  }
+
+  battleFighter(record, seat) {
+    const party = record && record.parties.get(seat);
+    if (!party) return null;
+    const client = this.clients.get(seat);
+    if (!record.bags) record.bags = new Map();
+    if (!record.bags.has(seat) && this.isNpcSeat(record, seat)) {
+      record.bags.set(seat, this.cloneBagMap(Turn.DEFAULT_NPC_BAG));
+    }
+    const bag = record.bags.get(seat);
+    return {
+      playerId: seat,
+      name: (client && client.name)
+        || (this.isNpcSeat(record, seat) ? 'TRAINER' : seat),
+      mons: party.mons,
+      badges: party.badges,
+      bag: this.cloneBagMap(bag) || undefined,
+    };
+  }
+
+  queueBattleAdmission(record, client, party) {
+    if (!record || !client || !party || record.mode !== 'coop_wild'
+        || !record.sim || record.settled) return false;
+    if (!record.eligibleIds.has(client.id)) return false;
+    const existing = record.sim.byId.get(client.id);
+    if (existing && existing.present !== false) return false;
+    if (!record.parties.has(client.id)) {
+      record.parties.set(client.id, party);
+      record.bags.set(client.id, this.bagMap(party.bag));
+    }
+    record.pendingAdmissions.add(client.id);
+    return this.applyBattleAdmissions(record);
+  }
+
+  applyBattleAdmissions(record) {
+    if (!record || !record.sim || !record.sim.canChangeSeats()) return false;
+    const ids = Array.from(record.pendingAdmissions || []).sort();
+    for (const clientId of ids) {
+      const fighter = this.battleFighter(record, clientId);
+      if (fighter && record.sim.admit('a', fighter)) {
+        record.pendingAdmissions.delete(clientId);
+        if (!record.memberIds.includes(clientId)) record.memberIds.push(clientId);
+        if (!record.sides.a.includes(clientId)) record.sides.a.push(clientId);
+        const client = this.clients.get(clientId);
+        if (client) {
+          client.battleId = record.id;
+          client.coopBattleId = record.id;
+        }
+        const group = this.coopBattles.get(record.id);
+        if (group && !group.members.includes(clientId)) group.members.push(clientId);
+        return true;
+      }
+    }
+    return false;
   }
 
   // Is this seat one of the trainer's rather than a player's?
@@ -2686,31 +2743,10 @@ class Relay {
       if (!record.parties.has(seat)) return false;
     }
 
-    const fighterOf = (seat) => {
-      const party = record.parties.get(seat);
-      if (!party) return null;
-      const client = this.clients.get(seat);
-      // Seed NPC seats with a gym-style kit when the host uploaded no bag.
-      if (!record.bags) record.bags = new Map();
-      if (!record.bags.has(seat) && this.isNpcSeat(record, seat)) {
-        record.bags.set(seat, this.cloneBagMap(Turn.DEFAULT_NPC_BAG));
-      }
-      const bag = record.bags.get(seat);
-      const bagCopy = this.cloneBagMap(bag);
-      return {
-        playerId: seat,
-        name: (client && client.name)
-          || (this.isNpcSeat(record, seat) ? 'TRAINER' : seat),
-        mons: party.mons,
-        badges: party.badges,
-        bag: bagCopy || undefined,
-      };
-    };
-
     const sideRoster = (keys) => {
       const out = [];
       for (const seat of keys || []) {
-        const fighter = fighterOf(seat);
+        const fighter = this.battleFighter(record, seat);
         if (fighter) out.push(fighter);
       }
       return out;
@@ -2821,6 +2857,9 @@ class Relay {
       for (const seat of seats) {
         if (record.sim.autoPick(seat)) { any = true; filed = true; }
       }
+      // autoPick may have opened the clean boundary a queued human needs.
+      // Admit before pre-filing the NPC on the new turn.
+      if (this.applyBattleAdmissions(record)) break;
       if (!any) break;
     }
     return filed;
@@ -2833,7 +2872,9 @@ class Relay {
     // this same pass or nothing else would send them until somebody else spoke.
     // Nothing here calls back into this function, so the two cannot chase each
     // other.
+    this.applyBattleAdmissions(record);
     this.fillNpcChoices(record);
+    this.applyBattleAdmissions(record);
     // Fighter bags are authoritative after resolve (Turn spends on item use,
     // including NPC auto-pick). Sync the hub sheet and drop holds so we never
     // double-spend with commitBagHolds.

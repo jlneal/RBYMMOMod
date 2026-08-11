@@ -387,8 +387,10 @@ function testCoopWildSeating() {
     mode: 'coop_wild',
     hostId: a.id,
     memberIds: [a.id],
+    eligibleIds: [a.id],
   });
-  ok(solo === null, 'coop_wild refuses without exactly two humans');
+  ok(solo && solo.sides.a.length === 1,
+    'coop_wild may begin with a vacant second human seat');
 
   const c = dial(relay, 'CWILDC');
   const crowd = relay.openMediatedBattle('cw-3', {
@@ -397,6 +399,38 @@ function testCoopWildSeating() {
     memberIds: [a.id, b.id, c.id],
   });
   ok(crowd === null, 'coop_wild refuses with three humans');
+}
+
+function testFlexibleWildAdmissionBoundary() {
+  const clock = makeClock();
+  const relay = makeRelay(clock);
+  const a = dial(relay, 'FLEXA');
+  const b = dial(relay, 'FLEXB');
+  const record = relay.openMediatedBattle('cw-flex', {
+    mode: 'coop_wild', hostId: a.id, memberIds: [a.id],
+    eligibleIds: [a.id, b.id],
+  });
+  relay.fillBattleParty(record, relay.get(a.id), {
+    battle: 'cw-flex', side: 'a', mons: [mon(10)], bag: [],
+  });
+  relay.fillBattleParty(record, relay.get(a.id), {
+    battle: 'cw-flex', side: 'b', mons: [mon(10)], bag: [],
+  });
+  record.ruleset = { chart: [[100]] };
+  ok(relay.tryStartSim(record), 'one-human flexible Wild starts immediately');
+  record.sim.drainEvents();
+  ok(record.sim.submitChoice(a.id, { action: 'fight', move: 0 }),
+    'the host closes the prefilled opening turn');
+  ok(record.sim.submitChoice(a.id, { action: 'fight', move: 0 }),
+    'the host commits on the next turn before late admission');
+  ok(relay.queueBattleAdmission(record, relay.get(b.id), {
+    battle: 'cw-flex', side: 'a', mons: [mon(10)], bag: [],
+  }) === false, 'late admission queues after a committed choice');
+  ok(record.pendingAdmissions.has(b.id), 'the queued party is retained');
+  relay.flushBattle(record);
+  ok(!record.pendingAdmissions.has(b.id), 'the next clean boundary admits it');
+  ok(record.sides.a[1] === b.id, 'the late player joins side a');
+  ok(record.sim.byId.get(b.id).slot === 1, 'the stable second field slot is assigned');
 }
 
 function testCoopWildCatchCatcher() {
@@ -562,6 +596,7 @@ testDisconnectForfeitAfterGrace();
 testDrawCarriesNoLists();
 testCoopNpcMediated();
 testCoopWildSeating();
+testFlexibleWildAdmissionBoundary();
 testCoopWildCatchCatcher();
 testTradeRelayStillWorks();
 testBagProofs();
