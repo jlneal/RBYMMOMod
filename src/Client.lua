@@ -10,6 +10,8 @@
 local need, mod = ...
 local Config = need("Config")
 local Wire = need("Wire")
+local CampaignWire = need("CampaignWire")
+local CampaignStateBridge = need("CampaignStateBridge")
 local Sha256 = need("Sha256")
 local Transport = need("Transport")
 local Roster = need("Roster")
@@ -39,6 +41,45 @@ local Cast = need("Cast")
 local Hub = need("Hub")
 
 local M = {}
+local transport
+
+-- Optional transport only. The independent campaign_state mod owns its save,
+-- schema, reducers, projection barrier, and enrollment capabilities.
+local campaignBridge
+
+local function campaignBridgeId(purpose)
+  local raw, why = Hub.Entropy.shared:bytes(16)
+  if type(raw) ~= "string" then return nil, why end
+  local hex = {}
+  for index = 1, #raw do hex[index] = ("%02x"):format(raw:byte(index)) end
+  return tostring(purpose or "world-request") .. "-" .. table.concat(hex)
+end
+
+function M.installCampaignBridge()
+  if campaignBridge then return true end
+  local ok, found = pcall(mod.find, mod, "campaign_state")
+  local foundation = ok and found and found.exports
+  if type(foundation) ~= "table" then return false end
+  local bridge, why = CampaignStateBridge.new({ foundation = foundation,
+    idFactory = campaignBridgeId,
+    frontierAdmission = Config.PROTOCOL >= 19,
+    connected = function() return transport:isReady() end,
+    send = function(kind, payload)
+      if transport:isReady() then transport:send(kind, payload) end
+    end,
+  })
+  if not bridge then
+    mod.log:warn("shared-world transport is unavailable (%s)", tostring(why))
+    return nil, why
+  end
+  local installed, installWhy = bridge:install()
+  if not installed then
+    mod.log:warn("shared-world transport is unavailable (%s)", tostring(installWhy))
+    return nil, installWhy
+  end
+  campaignBridge = bridge
+  return true
+end
 
 local ctx = {
   game = nil,
@@ -47,7 +88,7 @@ local ctx = {
   avatars = Avatars.new(),
 }
 
-local transport = Transport.new()
+transport = Transport.new()
 local server = HostServer.new()
 -- Handed its own one-field table rather than the ctx above: the store wants
 -- the mod facade and nothing else, which is what lets the suite construct one
@@ -1194,6 +1235,7 @@ function M.sendHello(game)
 end
 
 function M.disconnect()
+  if campaignBridge then campaignBridge:reset("multiplayer disconnected") end
   -- Not a plain restore any more: the character belongs to the player, not
   -- to the session, so every way out of a game -- walking out, stopping a
   -- host, or the tick funnelling a dropped transport through here -- leaves
@@ -1578,6 +1620,58 @@ handlers[Wire.WELCOME] = function(game, msg)
     connectedAnnounced = true
   end
   mod.log:info("connected -- %d other player(s) on", ctx.roster.count)
+  if campaignBridge and campaignBridge:active() then campaignBridge:advertise() end
+end
+
+handlers[CampaignWire.ADVERTISE] = function(_, msg)
+  if not campaignBridge then return end
+  local from = Wire.id(msg.from)
+  local inventory = CampaignWire.worldInventory(msg.inventory)
+  if from and inventory then campaignBridge:onInventory(from, inventory) end
+end
+
+handlers[CampaignWire.EVENTS] = function(_, msg)
+  if not campaignBridge then return end
+  local from = Wire.id(msg.from)
+  local envelope = CampaignWire.worldBatch(msg.envelope)
+  if from and envelope then campaignBridge:onEvents(envelope) end
+end
+
+handlers[CampaignWire.INVITE] = function(_, msg)
+  if not campaignBridge then return end
+  local from = Wire.id(msg.from)
+  local invitation = CampaignWire.worldInvitation(msg.invitation)
+  if from and invitation then campaignBridge:onInvitation(from, invitation) end
+end
+
+handlers[CampaignWire.SEQUENCE_GRANT] = function(_, msg)
+  if not campaignBridge then return end
+  local grant = CampaignWire.worldSequenceGrant(msg, Config.PROTOCOL >= 19)
+  if grant then campaignBridge:onGrant(grant) end
+end
+
+handlers[CampaignWire.FRONTIER] = function(_, msg)
+  if not campaignBridge or Config.PROTOCOL < 19 then return end
+  local frontier = CampaignWire.worldFrontier(msg.frontier)
+  if frontier then campaignBridge:onFrontier(frontier) end
+end
+
+handlers[CampaignWire.FRONTIER_READY] = function(_, msg)
+  if not campaignBridge or Config.PROTOCOL < 19 then return end
+  local admission = CampaignWire.worldFrontierAdmission(msg.admission)
+  if admission then campaignBridge:onFrontierReady(admission) end
+end
+
+handlers[CampaignWire.READY] = function(_, msg)
+  if not campaignBridge then return end
+  local ready = CampaignWire.worldReady(msg)
+  if ready then campaignBridge:onReady(ready) end
+end
+
+handlers[CampaignWire.UNAVAILABLE] = function(_, msg)
+  if not campaignBridge then return end
+  local unavailable = CampaignWire.worldUnavailable(msg)
+  if unavailable then campaignBridge:onUnavailable(unavailable.reason) end
 end
 
 -- Somebody arrived.  Announced in the corner as well as recorded, because
@@ -1984,6 +2078,7 @@ function M.install()
   })
 
   ui:install()
+  M.installCampaignBridge()
 
   -- One game-logic tick.  This runs before queued button edges are
   -- promoted, which is the documented place for a tool that has to act once
@@ -2238,6 +2333,14 @@ function M.install()
   -- by opening a menu.
   mod.exports.servers = function() return servers:list() end
   mod.exports.players = function() return ctx.roster:sorted() end
+  mod.exports.inviteSharedWorld = function(to)
+    if not campaignBridge then return nil, "campaign_state transport is unavailable" end
+    return campaignBridge:invite(to)
+  end
+  mod.exports.acceptSharedWorld = function(from)
+    if not campaignBridge then return nil, "campaign_state transport is unavailable" end
+    return campaignBridge:acceptFrom(from)
+  end
   -- The people this copy keeps on the hub it is on, newest friend first --
   -- rows, never the store, so nothing outside this mod can add to or empty
   -- what the player agreed to. Empty offline, because a friends list is a fact

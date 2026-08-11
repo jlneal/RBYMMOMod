@@ -112,7 +112,7 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // was never named. The rule every bump follows is unchanged: bump whenever a
 // client can send something a hub silently ignores. Kept in step with
 // Config.PROTOCOL on the mod side.
-const PROTOCOL = 18;
+const PROTOCOL = 19;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right

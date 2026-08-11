@@ -111,7 +111,7 @@ M.MOD_ID = "rby_mmo"
 -- grant (or neither does) because ownership was never named. Refusal that
 -- names both versions is the only sentence either player can act on.
 -- This number lives here and in server/lib/relay.js -- bump them together.
-M.PROTOCOL = 18
+M.PROTOCOL = 19
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.

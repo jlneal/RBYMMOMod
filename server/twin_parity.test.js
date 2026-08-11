@@ -131,17 +131,22 @@ test('inbound client→hub message types match on both hubs', () => {
     'mmo.friend_ask', 'mmo.friend_answer', 'mmo.friend_remove',
     'mmo.battle_ruleset', 'mmo.battle_party', 'mmo.battle_choice',
     'mmo.battle_reconnect',
+    'mmo.world_advertise', 'mmo.world_events', 'mmo.world_invite',
+    'mmo.world_sequence_request', 'mmo.world_sequence_commit',
+    'mmo.world_sequence_cancel', 'mmo.world_frontier_ack',
   ];
   const hub = read('src/Hub.lua');
-  const relay = read('server/lib/relay.js');
-  const wire = read('src/Wire.lua');
+  const relay = read('server/lib/relay.js')
+    + read('server/lib/campaign-authority.js');
+  const wire = read('src/Wire.lua') + read('src/CampaignWire.lua');
   for (const type of inbound) {
     assert.ok(
       wire.includes(`"${type}"`),
       `Wire.lua must declare ${type}`,
     );
     assert.ok(
-      hub.includes(`handlers[Wire.`) || hub.includes(type),
+      hub.includes(`handlers[Wire.`) || hub.includes(`handlers[CampaignWire.`)
+        || hub.includes(type),
       `Hub.lua must handle ${type}`,
     );
     // Hub uses Wire.CONST → string; assert the string appears in a handlers=
@@ -153,7 +158,7 @@ test('inbound client→hub message types match on both hubs', () => {
   }
   // Every Wire client→hub constant above must resolve; spot-check Hub wires
   // the same set by counting handlers[Wire.] sites against inbound length.
-  const hubHandlers = hub.match(/handlers\[Wire\.[A-Z0-9_]+\]/g) || [];
+  const hubHandlers = hub.match(/handlers\[(?:Wire|CampaignWire)\.[A-Z0-9_]+\]/g) || [];
   assert.ok(
     hubHandlers.length >= inbound.length,
     `Hub.lua handler count (${hubHandlers.length}) under-covers inbound (${inbound.length})`,
