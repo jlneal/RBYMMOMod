@@ -37,6 +37,9 @@ local foundation = {
         eq(envelope.signed, "events", "opaque batch reaches framework unchanged")
         return 2
       end,
+      certificationReceipt = function(context)
+        return { signed = "live-receipt", phase = context.phase }
+      end,
       status = function()
         return { active = true, worldId = "world-1", playerId = "ann" }
       end,
@@ -57,6 +60,11 @@ check(type(attached.lifecycle) == "function",
   "bridge exposes checkpoint/save lifecycle reset to the framework")
 check(bridge:advertise(), "bridge advertises signed inventory")
 eq(sent[#sent].kind, Bridge.ADVERTISE, "advertisement uses dedicated wire kind")
+local liveReceipt = assert(bridge:certificationReceipt({ phase = "after-reload" }))
+eq(liveReceipt.signed, "live-receipt",
+  "bridge exposes the transport-scoped live certification boundary")
+eq(liveReceipt.phase, "after-reload",
+  "bridge leaves live evidence context to Campaign State")
 local early, earlyWhy = attached.authority:request("ann", "unique", "articuno")
 eq(early, nil, "writes wait for the hub's authority acknowledgement")
 check(tostring(earlyWhy):find("handshake") ~= nil,

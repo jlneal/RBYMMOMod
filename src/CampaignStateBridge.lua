@@ -357,6 +357,13 @@ function M:active()
   return type(status) == "table" and status.active == true
 end
 
+function M:certificationReceipt(context)
+  if not self.api or type(self.api.certificationReceipt) ~= "function" then
+    return nil, "shared-world certification receipt is unavailable"
+  end
+  return self.api.certificationReceipt(context)
+end
+
 function M:onInventory(from, inventory)
   if not self.api then return nil, "campaign transport is not attached" end
   local batches, why = self.api.missing(inventory)

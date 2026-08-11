@@ -2583,6 +2583,13 @@ function M.install()
     if not campaignBridge then return nil, "campaign_state transport is unavailable" end
     return campaignBridge:rejoinMembership()
   end
+  -- Lab-only evidence boundary. The receipt is redacted but authenticated;
+  -- callers still treat it as save-adjacent material and capture a second
+  -- phase after a real close/reload before claiming durable persistence.
+  mod.exports.sharedWorldCertificationReceipt = function(context)
+    if not campaignBridge then return nil, "campaign_state transport is unavailable" end
+    return campaignBridge:certificationReceipt(context)
+  end
   -- The people this copy keeps on the hub it is on, newest friend first --
   -- rows, never the store, so nothing outside this mod can add to or empty
   -- what the player agreed to. Empty offline, because a friends list is a fact
