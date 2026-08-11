@@ -55,7 +55,10 @@ const DEFAULTS = {
   listen: { host: '0.0.0.0', port: 7788 },
   maxPlayers: 4,
   gameplay: {
-    proximityJoinEnabled: false,
+    wildCoopEnabled: true,
+    wildDoubleRate: 0,
+    offMapJoinEnabled: false,
+    proximityJoinEnabled: true,
     coopExpEnabled: true,
     coopMoneyEnabled: true,
   },
@@ -175,6 +178,7 @@ const LOG_LEVELS = ['debug', 'info', 'warn', 'error', 'silent'];
 const BOUNDS = {
   'listen.port': [1, 65535],
   'maxPlayers': [2, 64],
+  'gameplay.wildDoubleRate': [0, 100],
   'limits.perIpConnections': [1, 64],
   'limits.connectBurst': [1, 1000],
   'limits.connectPerMinute': [1, 6000],
@@ -211,6 +215,9 @@ const ENV_MAP = {
   RBY_MMO_HOST: 'listen.host',
   RBY_MMO_PORT: 'listen.port',
   RBY_MMO_MAX: 'maxPlayers',
+  RBY_MMO_WILD_COOP: 'gameplay.wildCoopEnabled',
+  RBY_MMO_WILD_DOUBLE_RATE: 'gameplay.wildDoubleRate',
+  RBY_MMO_OFF_MAP_JOIN: 'gameplay.offMapJoinEnabled',
   RBY_MMO_PROXIMITY_JOIN: 'gameplay.proximityJoinEnabled',
   RBY_MMO_COOP_EXP: 'gameplay.coopExpEnabled',
   RBY_MMO_COOP_MONEY: 'gameplay.coopMoneyEnabled',
@@ -248,6 +255,9 @@ const FLAG_MAP = {
   port: 'listen.port',
   max: 'maxPlayers',
   maxPlayers: 'maxPlayers',
+  wildCoop: 'gameplay.wildCoopEnabled',
+  wildDoubleRate: 'gameplay.wildDoubleRate',
+  offMapJoin: 'gameplay.offMapJoinEnabled',
   proximityJoin: 'gameplay.proximityJoinEnabled',
   coopExp: 'gameplay.coopExpEnabled',
   coopMoney: 'gameplay.coopMoneyEnabled',
@@ -580,6 +590,8 @@ function validate(config) {
   for (const dotted of Object.keys(BOUNDS)) clampNumber(working, dotted, warnings);
 
   validateBoolean(working, 'auth.required', warnings);
+  validateBoolean(working, 'gameplay.wildCoopEnabled', warnings);
+  validateBoolean(working, 'gameplay.offMapJoinEnabled', warnings);
   validateBoolean(working, 'gameplay.proximityJoinEnabled', warnings);
   validateBoolean(working, 'gameplay.coopExpEnabled', warnings);
   validateBoolean(working, 'gameplay.coopMoneyEnabled', warnings);

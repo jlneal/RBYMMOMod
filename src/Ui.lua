@@ -81,6 +81,7 @@ local SCREEN = {
   PICK     = "RbyMmoPick",
   HOSTSET  = "RbyMmoHostSetup",
   HOSTSIZE = "RbyMmoHostSize",
+  HOSTWILD = "RbyMmoHostWildDouble",
   PROXDIST = "RbyMmoProximityDistance",
   HOSTCODE = "RbyMmoHostCode",
   HOSTINFO = "RbyMmoHostInfo",
@@ -1213,7 +1214,9 @@ function M:install()
           local distance = client:autoJoinRange()
           items[#items + 1] = {
             label = "PROX DIST",
-            right = distance == 0 and "OFF" or tostring(distance),
+            right = distance == 0 and "OFF"
+              or (distance == Config.AUTO_JOIN_SAME_MAP and "MAP"
+                or tostring(distance)),
             onSelect = function() mod.ui.push(game, SCREEN.PROXDIST) end,
           }
         end
@@ -1510,9 +1513,12 @@ function M:install()
     if not code then code = client:setHostJoinCode(client:newJoinCode()) end
     local coopExp = client:hostCoopExpEnabled()
     local coopMoney = client:hostCoopMoneyEnabled()
+    local wildCoop = client:hostWildCoopEnabled()
     local proximityJoin = client:hostProximityJoinEnabled()
     local items = {
       { label = "PLAYERS", right = tostring(client:maxPlayers()), key = "players" },
+      { label = "WILD CO-OP", right = wildCoop and "ON" or "OFF",
+        key = "wildcoop" },
       { label = "CO-OP EXP", right = coopExp and "ON" or "OFF",
         key = "coopexp" },
       { label = "CO-OP MONEY", right = coopMoney and "ON" or "OFF",
@@ -1525,11 +1531,31 @@ function M:install()
         key = "code" },
       { label = "START", key = "go" },
     }
+    if wildCoop then
+      table.insert(items, 3, {
+        label = "OFF-MAP JOIN",
+        right = client:hostOffMapJoinEnabled() and "ON" or "OFF",
+        key = "offmapjoin",
+      })
+      table.insert(items, 4, {
+        label = "2ND WILD",
+        right = tostring(client:wildDoublePercent()) .. "%",
+        key = "wilddouble",
+      })
+    end
     return mod.ui.ListMenu.new(game, "HOST", items, {
       onChoose = function(item, menu)
         menu:close()
         if item.key == "players" then
           mod.ui.push(game, SCREEN.HOSTSIZE)
+        elseif item.key == "wildcoop" then
+          client:setHostWildCoopEnabled(not client:hostWildCoopEnabled())
+          mod.ui.push(game, SCREEN.HOSTSET)
+        elseif item.key == "offmapjoin" then
+          client:setHostOffMapJoinEnabled(not client:hostOffMapJoinEnabled())
+          mod.ui.push(game, SCREEN.HOSTSET)
+        elseif item.key == "wilddouble" then
+          mod.ui.push(game, SCREEN.HOSTWILD)
         elseif item.key == "coopexp" then
           client:setHostCoopExpEnabled(not client:hostCoopExpEnabled())
           mod.ui.push(game, SCREEN.HOSTSET)
@@ -1558,6 +1584,30 @@ function M:install()
       end,
       onCancel = function() mod.ui.push(game, SCREEN.MAIN) end,
     })
+  end })
+
+  screens:register(SCREEN.HOSTWILD, { new = function(game)
+    local client = ctx.client
+    local current = client:wildDoublePercent()
+    local items, start = {}, 1
+    for rate = 0, 100, 5 do
+      local chosen = rate
+      if rate == current then start = #items + 1 end
+      items[#items + 1] = {
+        label = rate == 0 and "OFF" or (tostring(rate) .. "%"),
+        onSelect = function()
+          client:setWildDoubleRate(chosen)
+          mod.ui.push(game, SCREEN.HOSTSET)
+        end,
+      }
+    end
+    local menu = mod.ui.Menu.new(game, items, {
+      tx = 8, ty = 0, tw = 12, maxVisible = 8,
+      onCancel = function() mod.ui.push(game, SCREEN.HOSTSET) end,
+    })
+    menu.index = start
+    menu:clampScroll()
+    return menu
   end })
 
   -- Changing the code, once there is one.
@@ -1646,11 +1696,13 @@ function M:install()
     end
     local current = client:autoJoinRange()
     local items, start = {}, 1
-    for distance = 0, Config.AUTO_JOIN_RANGE_MAX do
+    for distance = 0, Config.AUTO_JOIN_SAME_MAP do
       local chosenDistance = distance
       if distance == current then start = distance + 1 end
       items[#items + 1] = {
-        label = distance == 0 and "OFF" or (tostring(distance) .. " TILES"),
+        label = distance == 0 and "OFF"
+          or (distance == Config.AUTO_JOIN_SAME_MAP and "SAME MAP"
+            or (tostring(distance) .. " TILES")),
         onSelect = function()
           client:setAutoJoinRange(chosenDistance)
           mod.ui.push(game, SCREEN.MAIN)

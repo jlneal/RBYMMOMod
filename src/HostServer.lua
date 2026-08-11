@@ -155,6 +155,9 @@ function M:start(port, maxPlayers, joinCode, opts)
   self.hub = Hub.new({
     maxPlayers = maxPlayers,
     joinCode = code,
+    wildCoopEnabled = opts.wildCoopEnabled,
+    wildDoubleRate = opts.wildDoubleRate,
+    offMapJoinEnabled = opts.offMapJoinEnabled,
     coopExpEnabled = opts.coopExpEnabled,
     coopMoneyEnabled = opts.coopMoneyEnabled,
     proximityJoinEnabled = opts.proximityJoinEnabled,

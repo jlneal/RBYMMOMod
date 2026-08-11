@@ -554,6 +554,9 @@ function start(options = {}) {
 
   const relay = new Relay({
     maxPlayers: config.maxPlayers,
+    wildCoopEnabled: config.gameplay && config.gameplay.wildCoopEnabled,
+    wildDoubleRate: config.gameplay && config.gameplay.wildDoubleRate,
+    offMapJoinEnabled: config.gameplay && config.gameplay.offMapJoinEnabled,
     coopExpEnabled: config.gameplay && config.gameplay.coopExpEnabled,
     coopMoneyEnabled: config.gameplay && config.gameplay.coopMoneyEnabled,
     proximityJoinEnabled: config.gameplay

@@ -12,8 +12,10 @@ function pair(enabled) {
     const id = relay.accept(peer);
     relay.handle(id, {
       type: 'mmo.hello', proto: PROTOCOL, name: index ? 'BLUE' : 'RED',
+      playerId: index ? 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+        : 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     });
-    return id;
+    return messages(peer, 'mmo.welcome')[0].id;
   });
   relay.parties.set('party', ids.slice());
   for (const id of ids) relay.clients.get(id).partyId = 'party';
@@ -49,4 +51,13 @@ function messages(peer, type) {
   assert.equal(messages(peers[1], 'mmo.coop_battle').length, 1);
 }
 
-console.log('proximity policy relay: 7 passed');
+{
+  const { relay, peers, ids } = pair(true);
+  relay.wildCoopEnabled = false;
+  relay.handle(ids[0], {
+    type: 'mmo.coop_wait', battle: 'ROUTE_1|PIDGEY', mode: 'coop_wild',
+  });
+  assert.equal(messages(peers[1], 'mmo.coop_offer').length, 0);
+}
+
+console.log('proximity policy relay: 8 passed');

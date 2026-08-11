@@ -36,6 +36,12 @@ local Hub = need("Hub")
 
 eq(Config.DEFAULT_COOP_EXP_ENABLED, true, "co-op EXP defaults on")
 eq(Config.DEFAULT_COOP_MONEY_ENABLED, true, "co-op money defaults on")
+eq(Config.DEFAULT_WILD_COOP_ENABLED, true,
+  "Wild co-op defaults on to preserve upstream behavior")
+eq(Config.DEFAULT_OFF_MAP_JOIN_ENABLED, false,
+  "off-map eligibility defaults off to preserve vanilla distant solo fights")
+eq(Config.DEFAULT_AUTO_JOIN_RANGE, Config.AUTO_JOIN_SAME_MAP,
+  "automatic joining defaults to upstream same-map eligibility")
 eq(Config.rewardEnabled(nil, true), true, "missing setting uses true fallback")
 eq(Config.rewardEnabled(nil, false), false, "missing setting uses false fallback")
 eq(Config.rewardEnabled("off", true), false, "off is false")
@@ -46,10 +52,12 @@ local peer = {
   send = function(_, message) outbox[#outbox + 1] = message end,
   close = function() end,
 }
-local hub = Hub.new({ coopExpEnabled = false, coopMoneyEnabled = true })
+local hub = Hub.new({ coopExpEnabled = false, coopMoneyEnabled = true,
+  wildCoopEnabled = false, wildDoubleRate = 35, offMapJoinEnabled = true })
 local client = assert(hub:accept(peer))
 hub:receive(client, {
   type = Wire.HELLO, proto = Config.PROTOCOL, name = "RED",
+  playerId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 })
 local welcome
 for _, message in ipairs(outbox) do
@@ -58,6 +66,10 @@ end
 check(welcome ~= nil, "embedded hub welcomes the player")
 eq(welcome.coopExpEnabled, false, "embedded hub publishes EXP policy")
 eq(welcome.coopMoneyEnabled, true, "embedded hub publishes money policy")
+eq(welcome.wildCoopEnabled, false, "embedded hub publishes Wild permission")
+eq(welcome.wildDoubleRate, 35, "embedded hub publishes second-Wild rate")
+eq(welcome.offMapJoinEnabled, true,
+  "embedded hub publishes off-map eligibility")
 
 local function mon() return { species = "PIKACHU", level = 5 } end
 local field = { host = "host", trainer = "YOUNGSTER", slots = {} }

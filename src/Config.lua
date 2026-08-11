@@ -154,8 +154,12 @@ M.MAX_PLAYERS = 64
 M.DEFAULT_PLAYERS = 4
 M.DEFAULT_COOP_EXP_ENABLED = true
 M.DEFAULT_COOP_MONEY_ENABLED = true
-M.DEFAULT_PROXIMITY_JOIN_ENABLED = false
-M.DEFAULT_AUTO_JOIN_RANGE = 0
+M.DEFAULT_WILD_COOP_ENABLED = true
+M.DEFAULT_WILD_DOUBLE_RATE = 0
+M.DEFAULT_OFF_MAP_JOIN_ENABLED = false
+M.DEFAULT_PROXIMITY_JOIN_ENABLED = true
+M.AUTO_JOIN_SAME_MAP = 9
+M.DEFAULT_AUTO_JOIN_RANGE = M.AUTO_JOIN_SAME_MAP
 M.AUTO_JOIN_RANGE_MAX = 8
 
 function M.rewardEnabled(value, fallback)
@@ -165,13 +169,30 @@ function M.rewardEnabled(value, fallback)
 end
 
 function M.proximityEnabled(value)
-  return M.rewardEnabled(value, false)
+  return M.rewardEnabled(value, M.DEFAULT_PROXIMITY_JOIN_ENABLED)
+end
+
+function M.wildCoopEnabled(value)
+  return M.rewardEnabled(value, M.DEFAULT_WILD_COOP_ENABLED)
+end
+
+function M.offMapJoinEnabled(value)
+  return M.rewardEnabled(value, M.DEFAULT_OFF_MAP_JOIN_ENABLED)
+end
+
+function M.clampWildDoubleRate(value)
+  local n = tonumber(value)
+  if not n or n ~= n then return M.DEFAULT_WILD_DOUBLE_RATE end
+  return math.max(0, math.min(100, math.floor(n)))
 end
 
 function M.clampAutoJoinRange(value)
+  if value == "same_map" or value == "same map" or value == "map" then
+    return M.AUTO_JOIN_SAME_MAP
+  end
   local n = tonumber(value)
   if not n or n ~= n then return M.DEFAULT_AUTO_JOIN_RANGE end
-  return math.max(0, math.min(M.AUTO_JOIN_RANGE_MAX, math.floor(n)))
+  return math.max(0, math.min(M.AUTO_JOIN_SAME_MAP, math.floor(n)))
 end
 
 function M.clampPlayers(value)

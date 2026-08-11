@@ -757,6 +757,7 @@ handlers['mmo.coop_wait'] = (relay, client, msg) => {
   // Optional mode: only coop_wild is stored (Party vs Wild auto-join). Absent
   // keeps the trainer WAIT/JOIN invite path.
   const mode = cleanCoopOfferMode(msg.mode);
+  if (mode === 'coop_wild' && !relay.wildCoopEnabled) return;
   // startedAt so the sweep can expire it on the same clock the partner's
   // client already uses. Mirrors src/Hub.lua.
   client.coopOffer = { battle, label, map, mode, startedAt: relay.now() };
@@ -807,6 +808,7 @@ handlers['mmo.coop_join'] = (relay, client, msg) => {
     relay.send(client, 'mmo.coop_offer_end', { reason: 'alone' });
     return;
   }
+  if (offer.mode === 'coop_wild' && !relay.wildCoopEnabled) return;
 
   // Taken off the table before either side is told, so a second join racing
   // this one finds nothing to accept rather than starting the fight twice.
@@ -1209,9 +1211,14 @@ class Relay {
     // thing that reads a host's file. This only refuses to run on a value
     // that is not a number at all.
     this.maxPlayers = Number.isFinite(cap) ? cap : DEFAULT_PLAYERS;
+    this.wildCoopEnabled = opts.wildCoopEnabled !== false;
+    const wildDoubleRate = Math.floor(Number(opts.wildDoubleRate));
+    this.wildDoubleRate = Number.isFinite(wildDoubleRate)
+      ? Math.max(0, Math.min(100, wildDoubleRate)) : 0;
+    this.offMapJoinEnabled = opts.offMapJoinEnabled === true;
     this.coopExpEnabled = opts.coopExpEnabled !== false;
     this.coopMoneyEnabled = opts.coopMoneyEnabled !== false;
-    this.proximityJoinEnabled = opts.proximityJoinEnabled === true;
+    this.proximityJoinEnabled = opts.proximityJoinEnabled !== false;
     this.chatIntervalMs = Number.isFinite(Number(opts.chatIntervalMs))
       ? Number(opts.chatIntervalMs) : 500;
     this.protocol = Number.isFinite(Number(opts.protocol))
@@ -1754,6 +1761,9 @@ class Relay {
       points: client.points,
       coopExpEnabled: this.coopExpEnabled,
       coopMoneyEnabled: this.coopMoneyEnabled,
+      wildCoopEnabled: this.wildCoopEnabled,
+      wildDoubleRate: this.wildDoubleRate,
+      offMapJoinEnabled: this.offMapJoinEnabled,
       proximityJoinEnabled: this.proximityJoinEnabled,
       ranked: client.ranked,
       motd: motd || undefined,

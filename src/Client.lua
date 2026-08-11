@@ -80,6 +80,9 @@ friends.busy = function(game)
 end
 local sessionCoopExpEnabled = Config.DEFAULT_COOP_EXP_ENABLED
 local sessionCoopMoneyEnabled = Config.DEFAULT_COOP_MONEY_ENABLED
+local sessionWildCoopEnabled = Config.DEFAULT_WILD_COOP_ENABLED
+local sessionWildDoubleRate = Config.DEFAULT_WILD_DOUBLE_RATE
+local sessionOffMapJoinEnabled = Config.DEFAULT_OFF_MAP_JOIN_ENABLED
 local sessionProximityJoinEnabled = Config.DEFAULT_PROXIMITY_JOIN_ENABLED
 local coop = Coop.new(transport, ui, party, ctx.roster, ctx.chat, function()
   return sessionCoopExpEnabled
@@ -91,6 +94,8 @@ end, function()
   return M.autoJoinRange()
 end, function()
   return World.current()
+end, function()
+  return sessionWildCoopEnabled
 end)
 -- Co-op can be mid-handoff with no screen yet (running/state set, stack
 -- still overworld). Sessions asks this so a 1v1 invite is refused there
@@ -271,6 +276,42 @@ function M.setHostCoopMoneyEnabled(a, b)
   local enabled = Config.rewardEnabled(arg1(a, b),
     Config.DEFAULT_COOP_MONEY_ENABLED)
   mod.save:set("coopmoney", enabled)
+  return enabled
+end
+
+function M.hostWildCoopEnabled()
+  local stored = mod.save:get("wildcoop")
+  if stored ~= nil then return Config.wildCoopEnabled(stored) end
+  return Config.wildCoopEnabled(mod.options:get("wildcoop"))
+end
+
+function M.setHostWildCoopEnabled(a, b)
+  local enabled = Config.wildCoopEnabled(arg1(a, b))
+  mod.save:set("wildcoop", enabled)
+  return enabled
+end
+
+function M.wildDoublePercent()
+  local stored = mod.save:get("wilddouble")
+  if stored ~= nil then return Config.clampWildDoubleRate(stored) end
+  return Config.clampWildDoubleRate(mod.options:get("wilddouble"))
+end
+
+function M.setWildDoubleRate(a, b)
+  local rate = Config.clampWildDoubleRate(arg1(a, b))
+  mod.save:set("wilddouble", rate)
+  return rate
+end
+
+function M.hostOffMapJoinEnabled()
+  local stored = mod.save:get("offmapjoin")
+  if stored ~= nil then return Config.offMapJoinEnabled(stored) end
+  return Config.offMapJoinEnabled(mod.options:get("offmapjoin"))
+end
+
+function M.setHostOffMapJoinEnabled(a, b)
+  local enabled = Config.offMapJoinEnabled(arg1(a, b))
+  mod.save:set("offmapjoin", enabled)
   return enabled
 end
 
@@ -1205,6 +1246,9 @@ function M.host(a, b)
   -- screen mints a code before START is reachable, so a player only meets
   -- that sentence when the entropy pool could not produce one.
   local ok, err = server:start(Config.DEFAULT_PORT, limit, M.hostJoinCode(), {
+    wildCoopEnabled = M.hostWildCoopEnabled(),
+    wildDoubleRate = M.wildDoublePercent(),
+    offMapJoinEnabled = M.hostOffMapJoinEnabled(),
     coopExpEnabled = M.hostCoopExpEnabled(),
     coopMoneyEnabled = M.hostCoopMoneyEnabled(),
     proximityJoinEnabled = M.hostProximityJoinEnabled(),
@@ -1290,6 +1334,9 @@ function M.disconnect()
   coop:reset()
   sessionCoopExpEnabled = Config.DEFAULT_COOP_EXP_ENABLED
   sessionCoopMoneyEnabled = Config.DEFAULT_COOP_MONEY_ENABLED
+  sessionWildCoopEnabled = Config.DEFAULT_WILD_COOP_ENABLED
+  sessionWildDoubleRate = Config.DEFAULT_WILD_DOUBLE_RATE
+  sessionOffMapJoinEnabled = Config.DEFAULT_OFF_MAP_JOIN_ENABLED
   sessionProximityJoinEnabled = Config.DEFAULT_PROXIMITY_JOIN_ENABLED
   ctx.avatars:clear()
   ctx.roster:reset()
@@ -1579,6 +1626,9 @@ handlers[Wire.WELCOME] = function(game, msg)
   friends:setHub(dialled, M.playerName(game))
   sessionCoopExpEnabled = msg.coopExpEnabled ~= false
   sessionCoopMoneyEnabled = msg.coopMoneyEnabled ~= false
+  sessionWildCoopEnabled = msg.wildCoopEnabled ~= false
+  sessionWildDoubleRate = Config.clampWildDoubleRate(msg.wildDoubleRate)
+  sessionOffMapJoinEnabled = msg.offMapJoinEnabled == true
   sessionProximityJoinEnabled = msg.proximityJoinEnabled == true
   -- your own rating, which cannot come from the roster: it has no entry for
   -- you, by design
@@ -2047,6 +2097,26 @@ function M.install()
     { key = "maxplayers", label = "MAX PLAYERS", type = "number",
       default = Config.DEFAULT_PLAYERS,
       min = Config.MIN_PLAYERS, max = Config.MAX_PLAYERS, step = 1 },
+    { key = "wildcoop", label = "WILD CO-OP", type = "toggle",
+      default = Config.DEFAULT_WILD_COOP_ENABLED },
+    { key = "wilddouble", label = "2ND WILD %", type = "number",
+      default = Config.DEFAULT_WILD_DOUBLE_RATE, min = 0, max = 100, step = 5 },
+    { key = "offmapjoin", label = "OFF-MAP JOIN", type = "toggle",
+      default = Config.DEFAULT_OFF_MAP_JOIN_ENABLED },
+    { key = "proximityjoin", label = "PROX JOIN", type = "toggle",
+      default = Config.DEFAULT_PROXIMITY_JOIN_ENABLED },
+    { key = "autojoinrange", label = "AUTO JOIN RANGE", type = "choice",
+      default = Config.DEFAULT_AUTO_JOIN_RANGE,
+      choices = {
+        { "OFF", 0 }, { "1 TILE", 1 }, { "2 TILES", 2 },
+        { "3 TILES", 3 }, { "4 TILES", 4 }, { "5 TILES", 5 },
+        { "6 TILES", 6 }, { "7 TILES", 7 }, { "8 TILES", 8 },
+        { "SAME MAP", Config.AUTO_JOIN_SAME_MAP },
+      } },
+    { key = "coopexp", label = "CO-OP EXP", type = "toggle",
+      default = Config.DEFAULT_COOP_EXP_ENABLED },
+    { key = "coopmoney", label = "CO-OP MONEY", type = "toggle",
+      default = Config.DEFAULT_COOP_MONEY_ENABLED },
     { key = "hub", label = "JOIN", type = "text", default = Config.DEFAULT_HUB },
     -- The standing join code, so it can be seen and changed deliberately
     -- rather than only when a hub happens to ask for it -- and, since the

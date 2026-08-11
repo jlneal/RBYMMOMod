@@ -27,9 +27,12 @@ local Coop = need("Coop")
 local Hub = need("Hub")
 
 eq(Config.clampAutoJoinRange(-3), 0, "range clamps at zero")
-eq(Config.clampAutoJoinRange(99), 8, "range clamps at eight")
+eq(Config.clampAutoJoinRange(99), Config.AUTO_JOIN_SAME_MAP,
+  "range clamps at the same-map sentinel")
 eq(Config.clampAutoJoinRange(3.9), 3, "range is an integer tile count")
-eq(Config.proximityEnabled(nil), false, "host permission defaults off")
+eq(Config.clampAutoJoinRange("same_map"), Config.AUTO_JOIN_SAME_MAP,
+  "same-map preference has a stable stored spelling")
+eq(Config.proximityEnabled(nil), true, "host permission defaults on")
 
 local here = { mapId = "ROUTE_1", x = 10, y = 10 }
 eq(Coop.withinAutoJoin(here, { map = "ROUTE_1", x = 13, y = 12 }, 3),
@@ -40,11 +43,16 @@ eq(Coop.withinAutoJoin(here, { map = "VIRIDIAN", x = 10, y = 10 }, 8),
   false, "another map is never nearby")
 eq(Coop.withinAutoJoin(here, { map = "ROUTE_1", x = 10, y = 10 }, 0),
   false, "zero range is client opt-out")
+eq(Coop.withinAutoJoin(here, { map = "ROUTE_1", x = 99, y = 99 },
+  Config.AUTO_JOIN_SAME_MAP), true,
+  "same-map mode preserves upstream automatic eligibility")
 
 local sent = {}
-local coop = Coop.new({ send = function(_, kind, payload)
+local coop = Coop.new({ isReady = function() return true end,
+send = function(_, kind, payload)
   sent[#sent + 1] = { kind = kind, payload = payload }
-end }, {}, { isPartner = function(_, id) return id == "p2" end }, {
+end }, { confirm = function() return {} end },
+{ isPartner = function(_, id) return id == "p2" end }, {
   get = function(_, id)
     if id == "p2" then return { map = "ROUTE_1", x = 12, y = 10 } end
   end,
@@ -54,7 +62,7 @@ function() return here end)
 coop.note = function() end
 coop:onOffer({}, {
   from = "p2", name = "BLUE", battle = "ROUTE_1|TRAINER", map = "ROUTE_1",
-})
+}, "ROUTE_1")
 eq(#sent, 1, "nearby opted-in client sends one automatic join")
 eq(sent[1].kind, Wire.COOP_JOIN, "automatic handoff uses the normal join type")
 eq(sent[1].payload.auto, true, "automatic handoff is explicitly marked")
@@ -63,15 +71,27 @@ sent = {}
 coop.proximityJoinEnabled = function() return false end
 coop:onOffer({}, {
   from = "p2", name = "BLUE", battle = "ROUTE_1|TRAINER", map = "ROUTE_1",
-})
+}, "ROUTE_1")
 eq(#sent, 0, "host denial suppresses automatic joins")
+
+sent = {}
+coop.joinAsk, coop.offer = nil, nil
+coop.proximityJoinEnabled = function() return true end
+coop.autoJoinRange = function() return Config.AUTO_JOIN_SAME_MAP end
+coop:onOffer({}, {
+  from = "p2", name = "BLUE", battle = "ROUTE_1|PIDGEY",
+  map = "ROUTE_1", mode = "coop_wild",
+}, "ROUTE_1")
+eq(#sent, 1, "same-map compatibility mode automatically joins Party vs Wild")
+eq(sent[1].payload.auto, true, "the Wild automatic join is policy-marked")
 
 local outbox = {}
 local peer = { send = function(_, msg) outbox[#outbox + 1] = msg end,
   close = function() end }
 local hub = Hub.new({ proximityJoinEnabled = true })
 local client = assert(hub:accept(peer))
-hub:receive(client, { type = Wire.HELLO, proto = Config.PROTOCOL, name = "RED" })
+hub:receive(client, { type = Wire.HELLO, proto = Config.PROTOCOL, name = "RED",
+  playerId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" })
 local welcome
 for _, msg in ipairs(outbox) do if msg.type == Wire.WELCOME then welcome = msg end end
 eq(welcome and welcome.proximityJoinEnabled, true,

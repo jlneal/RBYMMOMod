@@ -58,7 +58,7 @@ M.__index = M
 
 function M.new(transport, ui, party, roster, chat, coopExpEnabled,
                coopMoneyEnabled, proximityJoinEnabled, autoJoinRange,
-               currentPosition)
+               currentPosition, wildCoopEnabled)
   return setmetatable({
     transport = transport,
     ui = ui,
@@ -75,6 +75,8 @@ function M.new(transport, ui, party, roster, chat, coopExpEnabled,
       or function() return 0 end,
     currentPosition = type(currentPosition) == "function" and currentPosition
       or function() return nil end,
+    wildCoopEnabled = type(wildCoopEnabled) == "function" and wildCoopEnabled
+      or function() return true end,
     -- our own standing offer: { battle, label, map, start }
     waiting = nil,
     -- the partner's, as it arrived: { from, name, battle, label, map, clock }
@@ -124,6 +126,10 @@ function M:proximityJoinAllowed()
   return self.proximityJoinEnabled() == true
 end
 
+function M:wildCoopAllowed()
+  return self.wildCoopEnabled() == true
+end
+
 function M:configuredAutoJoinRange()
   if not self:proximityJoinAllowed() then return 0 end
   return Config.clampAutoJoinRange(self.autoJoinRange())
@@ -133,6 +139,7 @@ function M.withinAutoJoin(current, remote, range)
   range = Config.clampAutoJoinRange(range)
   if range <= 0 or not (current and remote) then return false end
   if current.mapId ~= remote.map then return false end
+  if range == Config.AUTO_JOIN_SAME_MAP then return true end
   if not (tonumber(current.x) and tonumber(current.y)
       and tonumber(remote.x) and tonumber(remote.y)) then return false end
   return math.max(math.abs(current.x - remote.x),
@@ -630,6 +637,7 @@ end
 -- the host cannot fight solo while the partner auto-joins (see considerOffer).
 function M:onWildEncounter(game, state, mapId)
   if not (state and state.kind == "wild") then return false end
+  if not self:wildCoopAllowed() then return false end
   if not (self.transport:isReady() and self.party:has()) then return false end
   if self.running or self.waiting or self.ask then return false end
   if self.joinAsk then return false end
@@ -968,10 +976,21 @@ function M:considerOffer(game, myMap)
     -- Covered wild under a wait box counts as inFight; free joiners must not
     -- be mid-fight. Mutual wait is handled above before this check.
     if self:inFight(game) then return false end
-    return self:autoJoinWild(offer)
+    if self:autoJoinInRange(game, offer) then
+      return self:autoJoinWild(offer, true)
+    end
+    -- Wild offers remain available through the remote player's exact JOIN
+    -- action when this client has opted out of automatic joining.
+    return false
   end
 
   if self.waiting or self:inFight(game) then return false end
+  if self:autoJoinInRange(game, offer) then
+    self.offer = nil
+    self.transport:send(Wire.COOP_JOIN,
+      { to = offer.from, battle = offer.battle, auto = true })
+    return true
+  end
   return self:askToJoin(game, offer)
 end
 
@@ -981,7 +1000,7 @@ end
 -- JOIN after arbitration chose their offer), withdraw ours and discard the
 -- local engine wild first -- their battle key will not match ours.
 -- Same rule as considerOffer: only join over our wait when offer.from < selfId.
-function M:autoJoinWild(offer)
+function M:autoJoinWild(offer, automatic)
   if not (offer and offer.mode == "coop_wild") then return false end
   if not self.transport:isReady() then return false end
   if self.running or self.ask then return false end
@@ -1002,7 +1021,8 @@ function M:autoJoinWild(offer)
   -- Cleared before the send so a second considerOffer tick cannot double-join.
   -- A late alone from the hub still lands as COOP_OFFER_END with no box up.
   self.offer = nil
-  self.transport:send(Wire.COOP_JOIN, { to = from, battle = battle })
+  self.transport:send(Wire.COOP_JOIN,
+    { to = from, battle = battle, auto = automatic == true or nil })
   return true
 end
 
@@ -1315,12 +1335,6 @@ function M:onOffer(game, msg, myMap)
   self.aloneAnnounced = false
   if offer.mode ~= "coop_wild" then
     self:note(("%s is waiting at %s."):format(offer.name, fightName(offer.label)))
-  end
-  if self:autoJoinInRange(game, offer) then
-    self.offer = nil
-    self.transport:send(Wire.COOP_JOIN,
-      { to = offer.from, battle = offer.battle, auto = true })
-    return
   end
   -- Invite like a 2-on-2 ask: same map, and free to answer. Off-map stays a
   -- note + JOIN row until considerOffer runs on map.entered.

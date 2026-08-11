@@ -245,9 +245,12 @@ function M.new(opts)
   opts = opts or {}
   return setmetatable({
     limit = Config.clampPlayers(opts.maxPlayers),
+    wildCoopEnabled = opts.wildCoopEnabled ~= false,
+    wildDoubleRate = Config.clampWildDoubleRate(opts.wildDoubleRate),
+    offMapJoinEnabled = opts.offMapJoinEnabled == true,
     coopExpEnabled = opts.coopExpEnabled ~= false,
     coopMoneyEnabled = opts.coopMoneyEnabled ~= false,
-    proximityJoinEnabled = opts.proximityJoinEnabled == true,
+    proximityJoinEnabled = opts.proximityJoinEnabled ~= false,
     -- Absent is nil, never "": a hub with no code admits anyone who says
     -- hello, which is a fixture, not a hosting mode -- see the header.
     -- Re-normalised on the way in because a code that does not survive
@@ -612,6 +615,9 @@ function M:admit(client)
     id = client.id, players = players, points = client.points,
     coopExpEnabled = self.coopExpEnabled,
     coopMoneyEnabled = self.coopMoneyEnabled,
+    wildCoopEnabled = self.wildCoopEnabled,
+    wildDoubleRate = self.wildDoubleRate,
+    offMapJoinEnabled = self.offMapJoinEnabled,
     proximityJoinEnabled = self.proximityJoinEnabled,
     ranked = true,
   })
@@ -2466,6 +2472,7 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
   -- Optional mode: only coop_wild is stored (Party vs Wild auto-join). Absent
   -- keeps the trainer WAIT/JOIN invite path.
   local mode = Wire.coopOfferMode(msg.mode)
+  if mode == "coop_wild" and not self.wildCoopEnabled then return end
   client.coopOffer = {
     battle = battle,
     label = Wire.label(msg.label),
@@ -2528,6 +2535,7 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
     send(client, Wire.COOP_OFFER_END, { reason = "alone" })
     return
   end
+  if offer.mode == "coop_wild" and not self.wildCoopEnabled then return end
 
   -- Taken off the table before either side is told, so a second join racing
   -- this one finds nothing to accept rather than starting the fight twice.

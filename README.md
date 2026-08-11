@@ -422,10 +422,17 @@ prize money — and no points, and says as much the first time you win one.
 The host may turn **CO-OP EXP** and **CO-OP MONEY** off independently before
 starting the session; player-vs-player battles never pay either reward.
 
-The host may also enable **PROX JOIN** before starting. Each connected player
-then gets a **PROX DIST** row: `OFF` keeps manual joining, while 1–8 tiles opts
-that player into automatically joining a nearby partner's waiting co-op fight.
-The host policy is fixed for the life of the session.
+Party vs Wild remains on by default. The host may disable **WILD CO-OP**
+entirely, choose the future **2ND WILD** formation rate independently, and use
+**OFF-MAP JOIN** to decide whether a distant online partner reserves a
+late-joinable encounter from its first command. Off-map joining is off by
+default and never teleports or automatically admits the distant player.
+
+**PROX JOIN** is on by default. Each connected player gets a **PROX DIST** row:
+`OFF` keeps manual joining, 1–8 tiles opts into a local radius, and `SAME MAP`
+preserves v1's automatic Party vs Wild behavior. Proximity applies to trainer
+and Wild co-op but never supplies PvP consent. All host gameplay policy is
+fixed when the session starts and requires a restart to change.
 
 **A party battle is scored as a team battle.** Each of the four is rated
 against the *other pair's* combined strength — which is the match they actually
