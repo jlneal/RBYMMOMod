@@ -7,6 +7,7 @@ local Wire = need("Wire")
 local CampaignIdentity = need("CampaignIdentity")
 
 local M = {}
+M.MAX_CLOSED_PACKAGE_WIRE = 48 * 1024
 
 M.ADVERTISE = "mmo.world_advertise"
 M.EVENTS = "mmo.world_events"
@@ -20,6 +21,7 @@ M.UNAVAILABLE = "mmo.world_unavailable"
 M.FRONTIER = "mmo.world_frontier"
 M.FRONTIER_ACK = "mmo.world_frontier_ack"
 M.FRONTIER_READY = "mmo.world_frontier_ready"
+M.PREFIX = "mmo.world_prefix"
 
 local function worldPayload(value, depth, seen, budget)
   local kind = type(value)
@@ -117,6 +119,112 @@ function M.worldBatch(raw)
     events = events, tag = tag }
 end
 
+local function checkpointState(value, depth, seen, budget)
+  local kind = type(value)
+  if value == nil or kind == "boolean" then return value end
+  if kind == "number" then
+    if value ~= value or value == math.huge or value == -math.huge then return nil end
+    return value
+  end
+  if kind == "string" then return #value <= 128 and value or nil end
+  if kind ~= "table" or (depth or 0) >= 8 then return nil end
+  seen, budget = seen or {}, budget or { nodes = 0 }
+  if seen[value] then return nil end
+  seen[value] = true
+  local out = {}
+  for key, child in pairs(value) do
+    budget.nodes = budget.nodes + 1
+    if budget.nodes > 16384 or not CampaignIdentity.identifier(key, 96) then
+      seen[value] = nil; return nil
+    end
+    local clean = checkpointState(child, (depth or 0) + 1, seen, budget)
+    if clean == nil and child ~= nil then seen[value] = nil; return nil end
+    out[key] = clean
+  end
+  seen[value] = nil
+  return out
+end
+
+function M.worldClosedBase(raw)
+  if type(raw) ~= "table" or raw.schema ~= 1 or raw.closed ~= true then return nil end
+  local world = CampaignIdentity.identifier(raw.world, 64)
+  local compatibility = CampaignIdentity.identifier(raw.compatibility, 96)
+  local timelineHead = Wire.int(raw.timelineHead, 0, 9007199254740991)
+  local events = Wire.int(raw.events, 0, 9007199254740991)
+  local canonicalDigest = Wire.hex(raw.canonicalDigest, 16)
+  local stateDigest = Wire.hex(raw.stateDigest, 16)
+  local checkpointRevision = Wire.hex(raw.checkpointRevision, 16)
+  local closureDigest = Wire.hex(raw.closureDigest, 16)
+  local tag = Wire.hex(raw.tag, 64)
+  local state = checkpointState(raw.state)
+  if not (world and compatibility and timelineHead and events
+    and timelineHead <= events and canonicalDigest and #canonicalDigest == 16
+    and stateDigest and #stateDigest == 16 and checkpointRevision
+    and #checkpointRevision == 16 and closureDigest and #closureDigest == 16
+    and tag and #tag == 64 and state and type(raw.heads) == "table") then return nil end
+  local heads, actors, total = {}, 0, 0
+  for rawActor, rawSeq in pairs(raw.heads) do
+    local actor = CampaignIdentity.identifier(rawActor, 64)
+    local seq = Wire.int(rawSeq, 0, 9007199254740991)
+    actors = actors + 1
+    if not (actor and seq) or actors > 64 then return nil end
+    heads[actor], total = seq, total + seq
+  end
+  if total ~= events then return nil end
+  return { schema = 1, world = world, compatibility = compatibility,
+    timelineHead = timelineHead, events = events,
+    canonicalDigest = canonicalDigest, stateDigest = stateDigest,
+    checkpointRevision = checkpointRevision, closureDigest = closureDigest,
+    heads = heads, state = state, closed = true, tag = tag }
+end
+
+local function conservativeWireSize(value, budget)
+  local kind = type(value)
+  if value == nil then budget.bytes = budget.bytes + 4
+  elseif kind == "boolean" then budget.bytes = budget.bytes + 5
+  elseif kind == "number" then budget.bytes = budget.bytes + 32
+  elseif kind == "string" then budget.bytes = budget.bytes + (#value * 6) + 2
+  elseif kind == "table" then
+    budget.bytes = budget.bytes + 2
+    for key, child in pairs(value) do
+      if type(key) == "string" then budget.bytes = budget.bytes + (#key * 6) + 3
+      else budget.bytes = budget.bytes + 16 end
+      conservativeWireSize(child, budget)
+      if budget.bytes > M.MAX_CLOSED_PACKAGE_WIRE then return false end
+    end
+  else return false end
+  return budget.bytes <= M.MAX_CLOSED_PACKAGE_WIRE
+end
+
+function M.worldClosedPackage(raw)
+  if type(raw) ~= "table" or raw.schema ~= 1 then return nil end
+  local world = CampaignIdentity.identifier(raw.world, 64)
+  local compatibility = CampaignIdentity.identifier(raw.compatibility, 96)
+  local base = M.worldClosedBase(raw.base)
+  local frontier = M.worldFrontier and M.worldFrontier(raw.frontier) or nil
+  if not (world and compatibility and base and frontier
+    and base.world == world and base.compatibility == compatibility
+    and frontier.world == world and frontier.compatibility == compatibility
+    and type(raw.batches) == "table") then return nil end
+  local count, highest = 0, 0
+  for key in pairs(raw.batches) do
+    if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then return nil end
+    count, highest = count + 1, math.max(highest, key)
+    if count > 16 then return nil end
+  end
+  if count ~= highest then return nil end
+  local batches = {}
+  for index, value in ipairs(raw.batches) do
+    local batch = M.worldBatch(value)
+    if not batch or batch.world ~= world
+      or batch.compatibility ~= compatibility then return nil end
+    batches[index] = batch
+  end
+  local clean = { schema = 1, world = world, compatibility = compatibility,
+    base = base, batches = batches, frontier = frontier }
+  return conservativeWireSize(clean, { bytes = 0 }) and clean or nil
+end
+
 function M.worldInvitation(raw)
   if type(raw) ~= "table" or raw.schema ~= 1 then return nil end
   local world = CampaignIdentity.identifier(raw.world, 64)
@@ -197,7 +305,7 @@ function M.worldFrontier(raw)
   if type(raw) ~= "table" or raw.version ~= 1 then return nil end
   local world = CampaignIdentity.identifier(raw.world, 64)
   local compatibility = CampaignIdentity.identifier(raw.compatibility, 96)
-  local timelineHead = worldInteger(raw.timelineHead, 0, 4096)
+  local timelineHead = worldInteger(raw.timelineHead, 0, 9007199254740991)
   local canonicalDigest = Wire.hex(raw.canonicalDigest, 16)
   local revision = Wire.hex(raw.revision, 16)
   local tag = Wire.hex(raw.tag, 64)
@@ -221,7 +329,7 @@ function M.worldGrantBase(raw)
   if type(raw) ~= "table" or raw.version ~= 1 then return nil end
   local world = CampaignIdentity.identifier(raw.world, 64)
   local compatibility = CampaignIdentity.identifier(raw.compatibility, 96)
-  local position = worldInteger(raw.position, 1, 4097)
+  local position = worldInteger(raw.position, 1, 9007199254740991)
   local baseDigest = Wire.hex(raw.baseDigest, 16)
   local authorityRevision = Wire.hex(raw.authorityRevision, 16)
   local replicaRevision = Wire.hex(raw.replicaRevision, 16)

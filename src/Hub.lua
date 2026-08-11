@@ -3676,6 +3676,16 @@ handlers[CampaignWire.EVENTS] = function(self, client, msg)
   end
 end
 
+handlers[CampaignWire.PREFIX] = function(self, client, msg)
+  if self.protocol < 23 or not client.ready or not client.worldState then return end
+  local target = self.clients[Wire.id(msg.to)]
+  local package = CampaignWire.worldClosedPackage(msg.package)
+  if not (target and target.ready and target.worldState
+    and package and sameWorld(client.worldState, target.worldState)
+    and sameWorld(client.worldState, package)) then return end
+  send(target, CampaignWire.PREFIX, { from = client.id, package = package })
+end
+
 handlers[CampaignWire.INVITE] = function(self, client, msg)
   if not client.ready then return end
   local target = self.clients[Wire.id(msg.to)]

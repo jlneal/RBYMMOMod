@@ -1806,6 +1806,13 @@ handlers[CampaignWire.EVENTS] = function(_, msg)
   if from and envelope then campaignBridge:onEvents(envelope) end
 end
 
+handlers[CampaignWire.PREFIX] = function(_, msg)
+  if not campaignBridge or Config.PROTOCOL < 23 then return end
+  local from = Wire.id(msg.from)
+  local package = CampaignWire.worldClosedPackage(msg.package)
+  if from and package then campaignBridge:onPrefix(from, package) end
+end
+
 handlers[CampaignWire.INVITE] = function(_, msg)
   if not campaignBridge then return end
   local from = Wire.id(msg.from)
@@ -2551,6 +2558,13 @@ function M.install()
   mod.exports.acceptSharedWorld = function(from)
     if not campaignBridge then return nil, "campaign_state transport is unavailable" end
     return campaignBridge:acceptFrom(from)
+  end
+  mod.exports.sharedWorldRejoinRequired = function()
+    return campaignBridge and campaignBridge:membershipConsentRequired() or false
+  end
+  mod.exports.rejoinSharedWorld = function()
+    if not campaignBridge then return nil, "campaign_state transport is unavailable" end
+    return campaignBridge:rejoinMembership()
   end
   -- The people this copy keeps on the hub it is on, newest friend first --
   -- rows, never the store, so nothing outside this mod can add to or empty

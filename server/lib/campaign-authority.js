@@ -4,6 +4,7 @@ const { randomBytes } = require('node:crypto');
 const { cleanId } = require('./sanitize');
 const {
   cleanWorldInventory, cleanWorldBatch, cleanWorldInvitation,
+  cleanWorldClosedPackage,
   cleanWorldSequenceRequest, cleanWorldSequenceGrant,
   cleanWorldSequenceCancel, cleanWorldFrontier, cleanWorldGrantBase,
   cleanWorldFrontierAdmission,
@@ -361,6 +362,17 @@ handlers['mmo.world_events'] = (relay, client, msg) => {
   }
 };
 
+handlers['mmo.world_prefix'] = (relay, client, msg) => {
+  if (relay.protocol < 23 || !client.ready || !client.worldState) return;
+  const target = relay.clients.get(cleanId(msg.to));
+  const packageValue = cleanWorldClosedPackage(msg.package);
+  if (!target || !target.ready || !target.worldState
+      || !packageValue
+      || !sameWorld(client.worldState, target.worldState)
+      || !sameWorld(client.worldState, packageValue)) return;
+  relay.send(target, 'mmo.world_prefix', { from: client.id, package: packageValue });
+};
+
 handlers['mmo.world_invite'] = (relay, client, msg) => {
   if (!client.ready) return;
   const target = relay.clients.get(cleanId(msg.to));
@@ -432,4 +444,3 @@ function initialize(relay) {
 }
 
 module.exports = { handlers, initialize, releaseWorldRequests, pruneWorldTimelines };
-

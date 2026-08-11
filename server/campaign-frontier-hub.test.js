@@ -14,7 +14,7 @@ function join(relay, name) {
   const peer = { outbox: [], remoteAddress: '127.0.0.1',
     send(message) { this.outbox.push(message); }, close() {} };
   const id = relay.accept(peer);
-  relay.handle(id, { type: 'mmo.hello', proto: 19, name,
+  relay.handle(id, { type: 'mmo.hello', proto: relay.protocol, name,
     playerId: (++joinSerial).toString(16).padStart(32, '0'),
     map: 'PALLET', x: 1, y: 1, facing: 'down' });
   const side = { id, peer };
@@ -178,4 +178,41 @@ test('dedicated protocol-19 hub gates positions on acknowledged frontiers', () =
     request: 'restart-two', actor: 'ann', kind: 'pokemon.unique.resolve',
     subject: 'moltres', base: base(2, D1, R1) });
   assert.equal(take(behind, 'mmo.world_sequence_grant').position, 2);
+});
+
+test('dedicated protocol-23 hub relays bounded same-world closed prefixes', () => {
+  const relay = new Relay({ maxPlayers: 2, protocol: 23, log: quiet });
+  const ann = join(relay, 'PREFIXANN');
+  const bob = join(relay, 'PREFIXBOB');
+  const world = 'prefix-world';
+  const compatibility = 'campaign-state.4.prefix';
+  const heads = { ann: 0, bob: 0 };
+  const frontier = { version: 1, world, compatibility, timelineHead: 0,
+    canonicalDigest: '1'.repeat(16), heads, revision: '2'.repeat(16),
+    tag: '3'.repeat(64) };
+  const inventory = (player) => ({ schema: 1, world, compatibility, player,
+    timelineHead: 0, heads, tag: '4'.repeat(64) });
+  relay.handle(ann.id, { type: 'mmo.world_advertise',
+    inventory: inventory('ann'), frontier });
+  relay.handle(bob.id, { type: 'mmo.world_advertise',
+    inventory: inventory('bob'), frontier });
+
+  const packageValue = { schema: 1, world, compatibility,
+    base: { schema: 1, world, compatibility, timelineHead: 0, events: 0,
+      canonicalDigest: '1'.repeat(16), stateDigest: '5'.repeat(16),
+      checkpointRevision: '6'.repeat(16), closureDigest: '7'.repeat(16),
+      heads: {}, state: { world: {}, player: {} }, closed: true,
+      tag: '8'.repeat(64) }, batches: [], frontier };
+  relay.handle(ann.id, { type: 'mmo.world_prefix', to: bob.id,
+    package: packageValue });
+  const response = take(bob, 'mmo.world_prefix');
+  assert.equal(response.from, ann.id);
+  assert.equal(response.package.base.closed, true);
+
+  const malformed = structuredClone(packageValue);
+  malformed.base.heads = { ann: 1 };
+  relay.handle(ann.id, { type: 'mmo.world_prefix', to: bob.id,
+    package: malformed });
+  assert.equal(take(bob, 'mmo.world_prefix'), null,
+    'the relay refuses a malformed compact boundary');
 });

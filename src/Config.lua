@@ -134,7 +134,10 @@ M.MOD_ID = "rby_mmo"
 -- `campaignCatcher`. A protocol-21 client strips that beneficiary, so the
 -- shared world can observe that Articuno was consumed but cannot safely award
 -- it to the player whose ball succeeded.
-M.PROTOCOL = 22
+--
+-- 23 lets a compacted replica push an authenticated closed-prefix package to
+-- a stale same-world peer that ordinary event-tail replication cannot reach.
+M.PROTOCOL = 23
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.

@@ -106,6 +106,109 @@ function cleanWorldBatch(value) {
   return { schema: 1, world, compatibility, events, tag };
 }
 
+function cleanCheckpointState(value, depth = 0, seen = new Set(), budget = { nodes: 0 }) {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value === 'string') return value.length <= 128 ? value : undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || depth >= 8 || seen.has(value)) return undefined;
+  seen.add(value);
+  const out = Object.create(null);
+  for (const key of Object.keys(value)) {
+    budget.nodes += 1;
+    if (budget.nodes > 16384 || !/^[A-Za-z0-9_.:-]{1,96}$/.test(key)) {
+      seen.delete(value); return undefined;
+    }
+    const child = cleanCheckpointState(value[key], depth + 1, seen, budget);
+    if (child === undefined) { seen.delete(value); return undefined; }
+    out[key] = child;
+  }
+  seen.delete(value);
+  return out;
+}
+
+function cleanWorldClosedBase(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || value.schema !== 1 || value.closed !== true) return null;
+  const world = cleanProgressionId(value.world, 64);
+  const compatibility = cleanProgressionId(value.compatibility, 96);
+  const timelineHead = Number.isSafeInteger(value.timelineHead)
+    && value.timelineHead >= 0 ? value.timelineHead : null;
+  const events = Number.isSafeInteger(value.events) && value.events >= 0
+    ? value.events : null;
+  const canonicalDigest = cleanHex(value.canonicalDigest, 16);
+  const stateDigest = cleanHex(value.stateDigest, 16);
+  const checkpointRevision = cleanHex(value.checkpointRevision, 16);
+  const closureDigest = cleanHex(value.closureDigest, 16);
+  const tag = cleanHex(value.tag, 64);
+  const state = cleanCheckpointState(value.state);
+  if (!world || !compatibility || timelineHead === null || events === null
+      || timelineHead > events || !canonicalDigest || canonicalDigest.length !== 16
+      || !stateDigest || stateDigest.length !== 16 || !checkpointRevision
+      || checkpointRevision.length !== 16 || !closureDigest
+      || closureDigest.length !== 16 || !tag || tag.length !== 64
+      || state === undefined || !value.heads || typeof value.heads !== 'object'
+      || Array.isArray(value.heads)) return null;
+  const heads = Object.create(null);
+  const actors = Object.keys(value.heads);
+  if (actors.length > 64) return null;
+  let total = 0;
+  for (const rawActor of actors) {
+    const actor = cleanProgressionId(rawActor, 64);
+    const seq = value.heads[rawActor];
+    if (!actor || !Number.isSafeInteger(seq) || seq < 0) return null;
+    heads[actor] = seq;
+    total += seq;
+    if (!Number.isSafeInteger(total)) return null;
+  }
+  if (total !== events) return null;
+  return { schema: 1, world, compatibility, timelineHead, events,
+    canonicalDigest, stateDigest, checkpointRevision, closureDigest,
+    heads, state, closed: true, tag };
+}
+
+const MAX_CLOSED_PACKAGE_WIRE = 48 * 1024;
+function conservativeWireSize(value, budget = { bytes: 0 }) {
+  if (value === null || value === undefined) budget.bytes += 4;
+  else if (typeof value === 'boolean') budget.bytes += 5;
+  else if (typeof value === 'number') budget.bytes += 32;
+  else if (typeof value === 'string') budget.bytes += (value.length * 6) + 2;
+  else if (Array.isArray(value)) {
+    budget.bytes += 2;
+    for (const child of value) {
+      if (!conservativeWireSize(child, budget)) return false;
+    }
+  } else if (value && typeof value === 'object') {
+    budget.bytes += 2;
+    for (const [key, child] of Object.entries(value)) {
+      budget.bytes += (key.length * 6) + 3;
+      if (!conservativeWireSize(child, budget)) return false;
+    }
+  } else return false;
+  return budget.bytes <= MAX_CLOSED_PACKAGE_WIRE;
+}
+
+function cleanWorldClosedPackage(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+      || value.schema !== 1 || !Array.isArray(value.batches)
+      || value.batches.length > 16) return null;
+  const world = cleanProgressionId(value.world, 64);
+  const compatibility = cleanProgressionId(value.compatibility, 96);
+  const base = cleanWorldClosedBase(value.base);
+  const frontier = cleanWorldFrontier(value.frontier);
+  if (!world || !compatibility || !base || !frontier
+      || base.world !== world || base.compatibility !== compatibility
+      || frontier.world !== world || frontier.compatibility !== compatibility) return null;
+  const batches = [];
+  for (const raw of value.batches) {
+    const batch = cleanWorldBatch(raw);
+    if (!batch || batch.world !== world || batch.compatibility !== compatibility) return null;
+    batches.push(batch);
+  }
+  const clean = { schema: 1, world, compatibility, base, batches, frontier };
+  return conservativeWireSize(clean) ? clean : null;
+}
+
 function cleanWorldInvitation(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)
       || value.schema !== 1) return null;
@@ -154,7 +257,7 @@ function cleanWorldFrontier(value) {
   const world = cleanProgressionId(value.world, 64);
   const compatibility = cleanProgressionId(value.compatibility, 96);
   const timelineHead = Number.isSafeInteger(value.timelineHead)
-    && value.timelineHead >= 0 && value.timelineHead <= 4096
+    && value.timelineHead >= 0
     ? value.timelineHead : null;
   const canonicalDigest = cleanHex(value.canonicalDigest, 16);
   const revision = cleanHex(value.revision, 16);
@@ -183,7 +286,7 @@ function cleanWorldGrantBase(value) {
   const world = cleanProgressionId(value.world, 64);
   const compatibility = cleanProgressionId(value.compatibility, 96);
   const position = Number.isSafeInteger(value.position)
-    && value.position >= 1 && value.position <= 4097 ? value.position : null;
+    && value.position >= 1 ? value.position : null;
   const baseDigest = cleanHex(value.baseDigest, 16);
   const authorityRevision = cleanHex(value.authorityRevision, 16);
   const replicaRevision = cleanHex(value.replicaRevision, 16);
@@ -216,6 +319,7 @@ function cleanWorldFrontierAdmission(value) {
 module.exports = {
   cleanProgressionId,
   cleanWorldInventory, cleanWorldBatch, cleanWorldInvitation,
+  cleanWorldClosedBase, cleanWorldClosedPackage,
   cleanWorldSequenceRequest, cleanWorldSequenceGrant,
   cleanWorldSequenceCancel, cleanWorldFrontier, cleanWorldGrantBase,
   cleanWorldFrontierAdmission,

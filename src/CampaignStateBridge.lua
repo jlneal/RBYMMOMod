@@ -4,6 +4,7 @@
 local need = ...
 local CampaignIdentity = need("CampaignIdentity")
 local CampaignAdmission = need("CampaignAdmission")
+local CampaignWire = need("CampaignWire")
 
 local M = {}
 M.__index = M
@@ -20,6 +21,7 @@ M.UNAVAILABLE = "mmo.world_unavailable"
 M.FRONTIER = "mmo.world_frontier"
 M.FRONTIER_ACK = "mmo.world_frontier_ack"
 M.FRONTIER_READY = "mmo.world_frontier_ready"
+M.PREFIX = "mmo.world_prefix"
 M.MAX_OUTSTANDING = 32
 M.MAX_OFFERS = 16
 
@@ -65,7 +67,8 @@ function M.new(options)
     api = nil, pending = {}, grants = {}, offers = {}, serial = 0,
     frontierAdmission = options.frontierAdmission == true,
     admission = nil, admittedBase = nil, authorityRevision = nil,
-    authorized = false, blocked = nil, membershipPending = false }, M)
+    authorized = false, blocked = nil, membershipPending = false,
+    rejoinRequired = false }, M)
 end
 
 function M:requestId()
@@ -86,6 +89,9 @@ function M:install()
       end
       if self.blocked then return nil, self.blocked end
       if not self.authorized then return nil, "shared-world authority handshake is pending" end
+      if self.membershipPending and kind ~= "campaign.membership.transition" then
+        return nil, "canonical membership transition is pending"
+      end
       if countOutstanding(self) >= M.MAX_OUTSTANDING then
         return nil, "too many outstanding shared-world reservations"
       end
@@ -195,7 +201,7 @@ function M:advertise()
   end
   self.admittedBase = nil
   self.authorityRevision = nil
-  self.authorized, self.blocked = false, nil
+  self.authorized, self.blocked, self.rejoinRequired = false, nil, false
   self.send(M.ADVERTISE, { inventory = inventory, frontier = frontier })
   return true
 end
@@ -257,6 +263,20 @@ function M:onFrontierReady(raw)
   self.authorized, self.blocked = true, nil
   if self.foundation.apiVersion and self.foundation.apiVersion >= 4
     and type(self.foundation.ensureMembership) == "function" then
+    if type(self.foundation.membership) == "function" then
+      local membership, membershipWhy = self.foundation.membership()
+      if not membership then
+        self.authorized = false
+        self.blocked = membershipWhy or "canonical membership is unavailable"
+        return nil, self.blocked
+      end
+      if membership.state == "left" then
+        self.authorized = false
+        self.rejoinRequired = true
+        self.blocked = "explicit rejoin consent is required"
+        return true
+      end
+    end
     self.membershipPending = true
     local function complete(events, membershipWhy)
       self.membershipPending = false
@@ -283,6 +303,42 @@ function M:onFrontierReady(raw)
   return true
 end
 
+function M:membershipConsentRequired()
+  return self.rejoinRequired == true
+end
+
+function M:rejoinMembership()
+  if not self.rejoinRequired then
+    return nil, "canonical rejoin consent is not pending"
+  end
+  if type(self.foundation.rejoinMembership) ~= "function" then
+    return nil, "canonical rejoin is unavailable"
+  end
+  self.rejoinRequired = false
+  self.membershipPending = true
+  self.authorized, self.blocked = true, nil
+  local function complete(events, why)
+    self.membershipPending = false
+    self.authorized = false
+    if not events then
+      self.blocked = why or "canonical rejoin was refused"
+      self.rejoinRequired = self.blocked == "explicit rejoin consent is required"
+    end
+  end
+  local result, why = self.foundation.rejoinMembership(complete)
+  if result == "pending" then
+    self.authorized = false
+    return "pending"
+  end
+  self.membershipPending = false
+  self.authorized = false
+  if not result then
+    self.blocked = why or "canonical rejoin was refused"
+    return nil, self.blocked
+  end
+  return self:advertise()
+end
+
 function M:onUnavailable(reason)
   self.authorized = false
   self.blocked = reason == "duplicate_player"
@@ -301,11 +357,38 @@ end
 function M:onInventory(from, inventory)
   if not self.api then return nil, "campaign transport is not attached" end
   local batches, why = self.api.missing(inventory)
-  if not batches then return nil, why end
+  if not batches then
+    if type(why) == "string" and why:find("closed%-prefix hydration") then
+      local target = CampaignIdentity.identifier(from, 64)
+      if not target or type(self.api.closedPrefixPackage) ~= "function" then
+        return nil, "closed-prefix packaging is unavailable"
+      end
+      local package, packageWhy = self.api.closedPrefixPackage()
+      if not package then return nil, packageWhy end
+      local bounded = CampaignWire.worldClosedPackage(package)
+      if not bounded then return nil, "closed-prefix package exceeds MMO transport boundary" end
+      self.send(M.PREFIX, { to = target, package = bounded })
+      return "prefix_sent"
+    end
+    return nil, why
+  end
   for _, envelope in ipairs(batches) do
     self.send(M.EVENTS, { to = from, envelope = envelope })
   end
   return #batches
+end
+
+function M:onPrefix(from, package)
+  local source = CampaignIdentity.identifier(from, 64)
+  if not source then return nil, "closed-prefix source is invalid" end
+  if not self.api or type(self.api.adoptClosedPrefix) ~= "function" then
+    return nil, "closed-prefix adoption is unavailable"
+  end
+  local ok, why = self.api.adoptClosedPrefix(package)
+  if not ok then return nil, why end
+  local advertised, advertiseWhy = self:advertise()
+  if not advertised then return nil, advertiseWhy end
+  return true
 end
 
 function M:onEvents(envelope)
@@ -380,6 +463,7 @@ function M:reset(reason)
   self.authorityRevision = nil
   self.authorized, self.blocked = false, nil
   self.membershipPending = false
+  self.rejoinRequired = false
   return true
 end
 

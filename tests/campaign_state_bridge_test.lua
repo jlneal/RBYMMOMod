@@ -248,9 +248,66 @@ eq(attached19.authority:commit("grant-reset-19", {}), nil,
 eq(bridge19.authorized, false,
   "reopened save must repeat canonical frontier admission")
 
+-- Protocol 23 closes the one gap ordinary missing-batch exchange cannot
+-- cross: an authenticated compacted prefix is requested directly from the
+-- peer that advertised the inaccessible frontier, adopted, then advertised.
+local sent23, attached23, adopted23 = {}, nil, nil
+local package23 = { schema = 1, world = "world-23",
+  compatibility = "campaign-state.4.prefix", batches = {},
+  base = { schema = 1, world = "world-23",
+    compatibility = "campaign-state.4.prefix", timelineHead = 0, events = 0,
+    canonicalDigest = string.rep("1", 16), stateDigest = string.rep("2", 16),
+    checkpointRevision = string.rep("3", 16),
+    closureDigest = string.rep("4", 16), heads = {},
+    state = { world = {}, player = {} }, closed = true,
+    tag = string.rep("5", 64) },
+  frontier = { version = 1, world = "world-23",
+    compatibility = "campaign-state.4.prefix", timelineHead = 0,
+    canonicalDigest = string.rep("1", 16), heads = {},
+    revision = string.rep("6", 16), tag = string.rep("7", 64) } }
+local foundation23 = {
+  apiVersion = 4,
+  registerTransport = function(_, transport)
+    attached23 = transport
+    transport.attach({
+      inventory = function() return { signed = "inventory-23" } end,
+      missing = function()
+        return nil, "replica requires closed-prefix hydration"
+      end,
+      closedPrefixPackage = function() return package23 end,
+      adoptClosedPrefix = function(package)
+        adopted23 = package
+        return true
+      end,
+      status = function()
+        return { active = true, worldId = "world-23", playerId = "ann" }
+      end,
+    })
+    return true
+  end,
+}
+local bridge23 = assert(Bridge.new({ foundation = foundation23,
+  send = function(kind, payload)
+    sent23[#sent23 + 1] = { kind = kind, payload = payload }
+  end }))
+assert(bridge23:install())
+eq(bridge23:onInventory("peer-23", { signed = "behind" }), "prefix_sent",
+  "a compacted replica pushes its inaccessible prefix to the stale peer")
+eq(sent23[#sent23].kind, Bridge.PREFIX,
+  "closed-prefix hydration has a dedicated wire kind")
+eq(sent23[#sent23].payload.to, "peer-23",
+  "the compacted source targets the replica whose inventory is stale")
+check(bridge23:onPrefix("peer-23", package23),
+  "an authenticated same-world prefix is delegated for adoption")
+eq(adopted23.base.closureDigest, package23.base.closureDigest,
+  "package interpretation remains in Campaign State")
+eq(sent23[#sent23].kind, Bridge.ADVERTISE,
+  "successful adoption advertises the exact hydrated frontier")
+
 -- API 4 makes durable membership the first ordered write after an invited
 -- character catches up. No unrelated reservation is admitted in between.
-local sent4, attached4, invitationReady, memberActive = {}, nil, nil, false
+local sent4, attached4, invitationReady, memberState = {}, nil, nil, "absent"
+local rejoinSideWrite
 local foundation4 = {
   apiVersion = 4,
   registerTransport = function(_, transport)
@@ -274,12 +331,28 @@ local foundation4 = {
     })
     return true
   end,
+  membership = function()
+    return { player = "bob", state = memberState, active = memberState == "active" }
+  end,
   ensureMembership = function(done)
-    if memberActive then return true end
+    if memberState == "active" then return true end
     return attached4.authority:request("bob", "campaign.membership.transition",
       "campaign:member:bob", function(grant, why)
         if not grant then return done(nil, why) end
-        memberActive = true
+        memberState = "active"
+        attached4.authority:commit(grant.grant,
+          { { kind = "campaign.membership.transition" } })
+        done({ { kind = "campaign.membership.transition" } })
+      end)
+  end,
+  rejoinMembership = function(done)
+    if memberState ~= "left" then return nil, "membership is not left" end
+    rejoinSideWrite = attached4.authority:request("bob",
+      "pokemon.unique.resolve", "articuno")
+    return attached4.authority:request("bob", "campaign.membership.transition",
+      "campaign:member:bob", function(grant, why)
+        if not grant then return done(nil, why) end
+        memberState = "active"
         attached4.authority:commit(grant.grant,
           { { kind = "campaign.membership.transition" } })
         done({ { kind = "campaign.membership.transition" } })
@@ -309,7 +382,7 @@ local memberRequest = sent4[#sent4].payload.request
 check(bridge4:onGrant({ request = memberRequest, grant = "member-grant",
   world = "world-19", position = 4, base = grantBase }),
   "the exact membership grant reaches Campaign State")
-check(memberActive, "the invited stable player becomes canonically active")
+eq(memberState, "active", "the invited stable player becomes canonically active")
 eq(sent4[#sent4].kind, Bridge.SEQUENCE_COMMIT,
   "membership commits before ordinary world writes resume")
 
@@ -326,5 +399,33 @@ check(type(invitationReady) == "function",
 invitationReady({ signed = "invitation-4" })
 eq(sent4[#sent4].kind, Bridge.INVITE,
   "a prepared invitation is sent exactly once")
+
+memberState = "left"
+check(bridge4:advertise(), "a departed stable player may still advertise its frontier")
+assert(bridge4:onFrontier(authorityFrontier))
+local leftEcho = sent4[#sent4].payload.admission
+check(bridge4:onFrontierReady(leftEcho),
+  "frontier admission recognizes departure without undoing it")
+check(bridge4:membershipConsentRequired(),
+  "departed membership exposes an explicit consent boundary")
+eq(bridge4.authorized, false,
+  "departure cannot authorize ordinary shared-world writes")
+eq(attached4.authority:request("bob", "pokemon.unique.resolve", "articuno"), nil,
+  "unrelated writes remain blocked before rejoin consent")
+eq(bridge4:rejoinMembership(), "pending",
+  "explicit consent begins the canonical rejoin transition")
+eq(rejoinSideWrite, nil,
+  "the consent window authorizes membership and no unrelated write")
+eq(sent4[#sent4].payload.kind, "campaign.membership.transition",
+  "rejoin uses the ordinary canonical membership kind")
+local rejoinRequest = sent4[#sent4].payload.request
+check(bridge4:onGrant({ request = rejoinRequest, grant = "rejoin-grant",
+  world = "world-19", position = 4, base = grantBase }),
+  "the exact rejoin grant reaches Campaign State")
+eq(memberState, "active", "rejoin restores the same stable character")
+eq(bridge4.authorized, false,
+  "ordinary writes still wait for the frontier produced by rejoin")
+check(not bridge4:membershipConsentRequired(),
+  "consumed rejoin consent is not reusable")
 
 print(("campaign state MMO bridge: %d assertions passed"):format(passed))

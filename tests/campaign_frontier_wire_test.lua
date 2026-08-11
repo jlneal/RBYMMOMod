@@ -37,8 +37,8 @@ eq(admission.replicaRevision, R, "Lua accepts an internally bound acknowledgemen
 
 local bad = frontier(); bad.version = 2
 eq(Wire.worldFrontier(bad), nil, "Lua refuses an unknown frontier version")
-bad = frontier(); bad.timelineHead = 4097
-eq(Wire.worldFrontier(bad), nil, "Lua bounds canonical head by archive capacity")
+bad = frontier(); bad.timelineHead = 9007199254740992
+eq(Wire.worldFrontier(bad), nil, "Lua bounds canonical head to exact integers")
 bad = frontier(); bad.timelineHead = "3"
 eq(Wire.worldFrontier(bad), nil, "Lua refuses a numeric-string canonical head")
 bad = frontier(); bad.timelineHead = 3.5
@@ -95,5 +95,40 @@ eq(Wire.worldSequenceGrant(missingBase, true), nil,
   "protocol-19 sequence grant requires its admitted base")
 check(Wire.worldSequenceGrant(missingBase) ~= nil,
   "protocol-18 sequence grant remains backward compatible")
+
+local closed = { schema = 1, world = "shared-kanto",
+  compatibility = "campaign-state.4.proof", timelineHead = 3, events = 9,
+  canonicalDigest = D, stateDigest = string.rep("e", 16),
+  checkpointRevision = string.rep("f", 16),
+  closureDigest = string.rep("1", 16), heads = { ann = 7, bob = 2 },
+  state = { world = {}, player = {} }, closed = true, tag = T }
+eq(assert(Wire.worldClosedBase(closed)).events, 9,
+  "protocol-23 accepts a bounded authenticated closed prefix")
+local package = { schema = 1, world = closed.world,
+  compatibility = closed.compatibility, base = closed, batches = {},
+  frontier = frontier() }
+check(Wire.worldClosedPackage(package) ~= nil,
+  "protocol-23 accepts a closed prefix with its exact signed frontier")
+local wrongHeads = {}
+for key, value in pairs(closed) do wrongHeads[key] = value end
+wrongHeads.heads = { ann = 8, bob = 2 }
+eq(Wire.worldClosedBase(wrongHeads), nil,
+  "closed-prefix actor heads account for every summarized event")
+local tooMany = {}
+for index = 1, 17 do tooMany[index] = {} end
+local oversized = { schema = 1, world = closed.world,
+  compatibility = closed.compatibility, base = closed, batches = tooMany,
+  frontier = frontier() }
+eq(Wire.worldClosedPackage(oversized), nil,
+  "one protocol-23 package cannot carry an unbounded tail")
+local largeState = { world = {}, player = {} }
+for index = 1, 100 do largeState.world["subject" .. index] = string.rep("x", 128) end
+local largeBase = {}
+for key, value in pairs(closed) do largeBase[key] = value end
+largeBase.state = largeState
+eq(Wire.worldClosedPackage({ schema = 1, world = closed.world,
+  compatibility = closed.compatibility, base = largeBase, batches = {},
+  frontier = frontier() }), nil,
+  "protocol-23 refuses a package beyond the conservative 64 KiB wire boundary")
 
 print(("campaign frontier wire: %d assertions passed"):format(passed))

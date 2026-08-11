@@ -144,4 +144,49 @@ eq(state.pending, nil, "exact frontier acknowledgement releases the position")
 eq(bridge.admission:status().state, "writable",
   "replica is re-admitted on the new canonical base")
 
+-- Protocol 23 proves that the embedded host relays a bounded closed-prefix
+-- package only between replicas of the same campaign.
+local hub23 = Hub.new({ maxPlayers = 2, protocol = 23 })
+local peerA, peerB = { outbox = {} }, { outbox = {} }
+function peerA:close() self.closed = true end
+function peerB:close() self.closed = true end
+function peerA:send(message) self.outbox[#self.outbox + 1] = message end
+function peerB:send(message) self.outbox[#self.outbox + 1] = message end
+local clientA, clientB = assert(hub23:accept(peerA)), assert(hub23:accept(peerB))
+hub23:receive(clientA, { type = Wire.HELLO, proto = 23, name = "ANN",
+  playerId = string.rep("1", 32), map = "PALLET", x = 1, y = 1,
+  facing = "down" })
+hub23:receive(clientB, { type = Wire.HELLO, proto = 23, name = "BOB",
+  playerId = string.rep("2", 32), map = "PALLET", x = 2, y = 1,
+  facing = "down" })
+local world23, compatibility23 = "integration-prefix", "campaign-state.4.prefix"
+local frontier23 = { version = 1, world = world23,
+  compatibility = compatibility23, timelineHead = 0,
+  canonicalDigest = string.rep("1", 16), heads = { ann = 0, bob = 0 },
+  revision = string.rep("2", 16), tag = string.rep("3", 64) }
+local function inventory23(player)
+  return { schema = 1, world = world23, compatibility = compatibility23,
+    player = player, timelineHead = 0, heads = { ann = 0, bob = 0 },
+    tag = string.rep("4", 64) }
+end
+hub23:receive(clientA, { type = CampaignWire.ADVERTISE,
+  inventory = inventory23("ann"), frontier = frontier23 })
+hub23:receive(clientB, { type = CampaignWire.ADVERTISE,
+  inventory = inventory23("bob"), frontier = frontier23 })
+local package23 = { schema = 1, world = world23, compatibility = compatibility23,
+  base = { schema = 1, world = world23, compatibility = compatibility23,
+    timelineHead = 0, events = 0, canonicalDigest = string.rep("1", 16),
+    stateDigest = string.rep("5", 16), checkpointRevision = string.rep("6", 16),
+    closureDigest = string.rep("7", 16), heads = {},
+    state = { world = {}, player = {} }, closed = true,
+    tag = string.rep("8", 64) }, batches = {}, frontier = frontier23 }
+hub23:receive(clientA, { type = CampaignWire.PREFIX, to = clientB.id,
+  package = package23 })
+local response23 = peerB.outbox[#peerB.outbox]
+eq(response23.type, CampaignWire.PREFIX,
+  "embedded host relays the correlated closed-prefix response")
+eq(response23.from, clientA.id, "prefix response identifies its source replica")
+eq(response23.package.base.closed, true,
+  "embedded relay preserves the validated compact boundary")
+
 print(("campaign protocol integration: %d assertions passed"):format(passed))

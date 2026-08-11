@@ -134,6 +134,7 @@ test('inbound client→hub message types match on both hubs', () => {
     'mmo.world_advertise', 'mmo.world_events', 'mmo.world_invite',
     'mmo.world_sequence_request', 'mmo.world_sequence_commit',
     'mmo.world_sequence_cancel', 'mmo.world_frontier_ack',
+    'mmo.world_prefix',
   ];
   const hub = read('src/Hub.lua');
   const relay = read('server/lib/relay.js')

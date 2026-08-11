@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   cleanWorldFrontier, cleanWorldGrantBase, cleanWorldFrontierAdmission,
+  cleanWorldClosedBase, cleanWorldClosedPackage,
 } = require('./lib/campaign-sanitize.js');
 
 const A = 'a'.repeat(16);
@@ -26,7 +27,7 @@ test('protocol-19 frontier vocabulary matches the Lua boundary', () => {
 
   let bad = frontier(); bad.version = 2;
   assert.equal(cleanWorldFrontier(bad), null);
-  bad = frontier(); bad.timelineHead = 4097;
+  bad = frontier(); bad.timelineHead = Number.MAX_SAFE_INTEGER + 1;
   assert.equal(cleanWorldFrontier(bad), null);
   bad = frontier(); bad.timelineHead = '3';
   assert.equal(cleanWorldFrontier(bad), null);
@@ -67,4 +68,35 @@ test('protocol-19 frontier vocabulary matches the Lua boundary', () => {
     replicaRevision: R, grantBase: base() };
   row.grantBase.world = 'other-world';
   assert.equal(cleanWorldFrontierAdmission(row), null);
+});
+
+test('protocol-23 closed-prefix package is strict and bounded', () => {
+  const current = frontier();
+  const closed = { schema: 1, world: current.world,
+    compatibility: current.compatibility, timelineHead: 3, events: 9,
+    canonicalDigest: D, stateDigest: 'e'.repeat(16),
+    checkpointRevision: 'f'.repeat(16), closureDigest: '1'.repeat(16),
+    heads: { ann: 7, bob: 2 }, state: { world: {}, player: {} },
+    closed: true, tag: T };
+  assert.equal(cleanWorldClosedBase(closed).events, 9);
+  assert.equal(cleanWorldClosedPackage({ schema: 1, world: current.world,
+    compatibility: current.compatibility, base: closed, batches: [],
+    frontier: current }).base.closed, true);
+  let bad = structuredClone(closed); bad.heads.ann = 8;
+  assert.equal(cleanWorldClosedBase(bad), null,
+    'actor heads must account for every summarized event');
+  bad = structuredClone(closed); bad.state.world.bad = 'x'.repeat(129);
+  assert.equal(cleanWorldClosedBase(bad), null,
+    'checkpoint state strings remain bounded');
+  assert.equal(cleanWorldClosedPackage({ schema: 1, world: current.world,
+    compatibility: current.compatibility, base: closed,
+    batches: Array.from({ length: 17 }, () => ({})), frontier: current }), null,
+  'one transport package cannot carry an unbounded tail');
+  const large = structuredClone(closed);
+  large.state.world = Object.fromEntries(Array.from({ length: 100 }, (_, index) =>
+    [`subject${index}`, 'x'.repeat(128)]));
+  assert.equal(cleanWorldClosedPackage({ schema: 1, world: current.world,
+    compatibility: current.compatibility, base: large, batches: [],
+    frontier: current }), null,
+  'the conservative package bound fits below the 64 KiB line limit');
 });
