@@ -1742,7 +1742,7 @@ async function playRankedBattle(port, winnerName, loserName) {
 }
 
 // One JSON line, matching the fixed contract in the plan exactly: at,
-// startedAt, repeats, winner{name,points,gained}, loser{name,points,lost} --
+// startedAt, repeats, winner{id,name,points,gained}, loser{id,name,points,lost} --
 // nothing else on either level.
 function assertHistoryRecordShape(record, winnerName, loserName) {
   ok(typeof record.at === 'number' && record.at > 0,
@@ -1752,11 +1752,15 @@ function assertHistoryRecordShape(record, winnerName, loserName) {
   ok(Object.keys(record).sort().join(',') === 'at,loser,repeats,startedAt,winner',
     'carrying exactly the five contract fields, nothing else');
   ok(record.winner.name === winnerName, 'the winner is named');
-  ok(Object.keys(record.winner).sort().join(',') === 'gained,name,points',
-    'the winner sub-object carries exactly its three contract fields');
+  ok(Object.keys(record.winner).sort().join(',') === 'gained,id,name,points',
+    'the winner sub-object carries exactly its four contract fields');
+  ok(typeof record.winner.id === 'string' && record.winner.id.length === 32,
+    'the winner is bound to their persistent player id');
   ok(record.loser.name === loserName, 'the loser is named');
-  ok(Object.keys(record.loser).sort().join(',') === 'lost,name,points',
-    'and the loser sub-object carries exactly its three');
+  ok(Object.keys(record.loser).sort().join(',') === 'id,lost,name,points',
+    'and the loser sub-object carries exactly its four');
+  ok(typeof record.loser.id === 'string' && record.loser.id.length === 32,
+    'the loser is bound to their persistent player id');
 }
 
 // ------- history.jsonl: appended, 0600, one line per settled ranked battle
