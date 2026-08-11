@@ -41,6 +41,8 @@
 local need = ...
 local Config = need("Config")
 local Wire = need("Wire")
+local CampaignWire = need("CampaignWire")
+local CampaignAdmission = need("CampaignAdmission")
 local Sha256 = need("Sha256")
 local Rank = need("Rank")
 -- The turn machine, and the one thing in this file that is not pure routing.
@@ -244,6 +246,9 @@ M.Entropy = Entropy
 function M.new(opts)
   opts = opts or {}
   return setmetatable({
+    -- Test-selectable until the full Lua/Node/client frontier path is ready.
+    -- Shipped clients still negotiate Config.PROTOCOL.
+    protocol = opts.protocol or Config.PROTOCOL,
     limit = Config.clampPlayers(opts.maxPlayers),
     wildCoopEnabled = opts.wildCoopEnabled ~= false,
     wildDoubleRate = Config.clampWildDoubleRate(opts.wildDoubleRate),
@@ -262,6 +267,9 @@ function M.new(opts)
     players = 0,      -- of those, the ones that have been admitted
     sessions = {},    -- sessionId -> { a, b, kind }
     parties = {},     -- partyId -> { memberId, ... }
+    -- Ephemeral canonical-position authorities. Campaign journals remain on
+    -- participant saves; the hub holds only the active frontier and queue.
+    worldTimelines = {},
     -- Ranked PVP.  The board is what a rating *is* -- the hub owns it,
     -- because a client that owned its own score would simply write itself a
     -- better one -- and `matches` is the paperwork for one battle: who was
@@ -432,6 +440,18 @@ function M:newNonce()
   local digest = Sha256.hex(raw .. "|" .. self.nextNonce .. "|" .. self.clock)
   if type(digest) ~= "string" then return nil end
   return digest:sub(1, Config.NONCE_HEX)
+end
+
+-- Opaque reservation token for one canonical campaign position. It shares
+-- the hub entropy pool but has a separate domain and counter from auth
+-- nonces, so neither namespace can collide with or replay the other.
+function M:newWorldToken()
+  self.nextWorldToken = (self.nextWorldToken or 0) + 1
+  local raw = self.entropy and self.entropy:bytes(16)
+  if type(raw) ~= "string" then return nil end
+  local digest = Sha256.hex(raw .. "|world-grant|"
+    .. self.nextWorldToken .. "|" .. self.clock)
+  return type(digest) == "string" and digest:sub(1, 32) or nil
 end
 
 -- ------- plumbing
@@ -633,6 +653,8 @@ end
 
 function M:drop(client)
   if not client or not self.clients[client.id] then return false end
+  self:releaseWorldRequests(client)
+  self:pruneWorldTimelines(client.id)
   self:endSession(client, "peer_left")
   -- Before endParty, deliberately: clearCoopOffer finds the partner *through*
   -- the party, so withdrawing after the party is gone would withdraw into
@@ -2249,9 +2271,9 @@ local handlers = {}
 
 handlers[Wire.HELLO] = function(self, client, msg)
   if client.ready then return end
-  if Wire.int(msg.proto, 0, 9999) ~= Config.PROTOCOL then
+  if Wire.int(msg.proto, 0, 9999) ~= self.protocol then
     return self:refuseClient(client, ("This game speaks protocol %d; yours "
-      .. "speaks %s."):format(Config.PROTOCOL, tostring(msg.proto)))
+      .. "speaks %s."):format(self.protocol, tostring(msg.proto)))
   end
   local name = Wire.name(msg.name)
   if not name then
@@ -3184,6 +3206,438 @@ handlers[Wire.RANKS] = function(self, client)
   client.lastRanks = self.clock
   send(client, Wire.RANKING, { entries = self.board:top(Config.RANK_TOP) })
 end
+
+local function sameWorld(a, b)
+  return a and b and a.world == b.world
+    and a.compatibility == b.compatibility
+end
+
+local function sameHeads(a, b)
+  if type(a) ~= "table" or type(b) ~= "table" then return false end
+  for actor, seq in pairs(a) do if b[actor] ~= seq then return false end end
+  for actor, seq in pairs(b) do if a[actor] ~= seq then return false end end
+  return true
+end
+
+local function inventoryMatchesFrontier(inventory, frontier)
+  return sameWorld(inventory, frontier)
+    and inventory.timelineHead == frontier.timelineHead
+    and sameHeads(inventory.heads, frontier.heads)
+end
+
+local function sameFrontier(a, b)
+  return sameWorld(a, b) and a.revision == b.revision
+    and a.timelineHead == b.timelineHead
+    and a.canonicalDigest == b.canonicalDigest
+    and sameHeads(a.heads, b.heads)
+end
+
+local function advancesOwnActorHead(current, candidate, actor)
+  if not current or not candidate or not actor
+    or not sameWorld(current, candidate)
+    or candidate.timelineHead ~= current.timelineHead
+    or candidate.canonicalDigest ~= current.canonicalDigest then return false end
+  local advanced = false
+  for id, seq in pairs(current.heads) do
+    local nextSeq = candidate.heads[id]
+    if nextSeq == nil then return false end
+    if id == actor then
+      if nextSeq < seq then return false end
+      if nextSeq > seq then advanced = true end
+    elseif nextSeq ~= seq then
+      return false
+    end
+  end
+  for id in pairs(candidate.heads) do
+    if current.heads[id] == nil then return false end
+  end
+  return advanced
+end
+
+local WORLD_EVIDENCE_LIMIT = 4096
+
+local function recordWorldEvidence(state, events)
+  if not state.evidenceIds then
+    state.evidenceIds, state.evidenceActors, state.evidencePositions = {}, {}, {}
+    state.evidenceCount = 0
+  end
+  for _, event in ipairs(events) do
+    if not state.evidenceIds[event.id]
+      and state.evidenceCount < WORLD_EVIDENCE_LIMIT then
+      local row = { actor = event.actor, seq = event.seq,
+        position = event.owner == "world" and event.position or nil }
+      state.evidenceIds[event.id] = row
+      state.evidenceCount = state.evidenceCount + 1
+      local actor = state.evidenceActors[row.actor]
+      if not actor then actor = {}; state.evidenceActors[row.actor] = actor end
+      actor[row.seq] = true
+      if row.position then state.evidencePositions[row.position] = true end
+    end
+  end
+end
+
+local function pruneWorldEvidence(state)
+  if not state.evidenceIds or not state.frontier then return end
+  for id, row in pairs(state.evidenceIds) do
+    local actorHead = state.frontier.heads[row.actor] or 0
+    if row.seq <= actorHead
+      and (not row.position or row.position <= state.frontier.timelineHead) then
+      state.evidenceIds[id] = nil
+      state.evidenceCount = state.evidenceCount - 1
+      local actor = state.evidenceActors[row.actor]
+      if actor then actor[row.seq] = nil end
+      if row.position then state.evidencePositions[row.position] = nil end
+    end
+  end
+end
+
+
+local function advancesFromRelayedEvidence(state, candidate, localActor)
+  local current = state.frontier
+  if not current or state.pending or not state.evidenceIds
+    or not sameWorld(current, candidate)
+    or candidate.timelineHead < current.timelineHead then return false end
+  local changed = candidate.timelineHead > current.timelineHead
+  if candidate.timelineHead == current.timelineHead then
+    if candidate.canonicalDigest ~= current.canonicalDigest then return false end
+  else
+    for position = current.timelineHead + 1, candidate.timelineHead do
+      if not state.evidencePositions[position] then return false end
+    end
+  end
+  for actor, seq in pairs(current.heads) do
+    local nextSeq = candidate.heads[actor]
+    if nextSeq == nil or nextSeq < seq then return false end
+  end
+  for actor, nextSeq in pairs(candidate.heads) do
+    local seq = current.heads[actor] or 0
+    if nextSeq > seq then
+      changed = true
+      if actor ~= localActor then
+        if nextSeq - seq > WORLD_EVIDENCE_LIMIT then return false end
+        local evidence = state.evidenceActors[actor]
+        for expected = seq + 1, nextSeq do
+          if not evidence or not evidence[expected] then return false end
+        end
+      end
+    end
+  end
+  return changed
+end
+
+local function worldTimeline(self, inventory, frontier)
+  local key = inventory.world .. "|" .. inventory.compatibility
+  local state = self.worldTimelines[key]
+  if not state then
+    state = { key = key, world = inventory.world,
+      compatibility = inventory.compatibility, head = inventory.timelineHead,
+      frontier = self.protocol >= 19 and frontier or nil,
+      evidenceIds = {}, evidenceActors = {}, evidencePositions = {},
+      evidenceCount = 0,
+      pending = nil, queue = {}, requests = {} }
+    self.worldTimelines[key] = state
+  elseif self.protocol < 19 and not state.pending
+    and inventory.timelineHead > state.head then
+    state.head = inventory.timelineHead
+  end
+  return state
+end
+
+local function sendAuthorityFrontier(self, client, state)
+  if self.protocol >= 19 and state.frontier then
+    send(client, CampaignWire.FRONTIER, { frontier = state.frontier })
+  end
+end
+
+local function worldRequestKey(clientId, request)
+  return clientId .. "|" .. request
+end
+
+local function publishAuthorityFrontier(self, state)
+  -- Every queued request names the old base. A published occupant stays held
+  -- until somebody acknowledges the resulting frontier; every unpublished
+  -- grant and queued request is revoked rather than silently rebound.
+  if state.pending and not state.pending.published then
+    local pendingClient = self.clients[state.pending.clientId]
+    if pendingClient then pendingClient.worldSequencePending = nil end
+    state.requests[worldRequestKey(state.pending.clientId,
+      state.pending.request)] = nil
+    state.pending = nil
+  end
+  for _, row in ipairs(state.queue) do
+    local queuedClient = self.clients[row.clientId]
+    if queuedClient then queuedClient.worldSequencePending = nil end
+    state.requests[worldRequestKey(row.clientId, row.request)] = nil
+  end
+  state.queue = {}
+  for _, member in pairs(self.clients) do
+    if member.ready and sameWorld(member.worldState, state) then
+      member.worldAdmission = nil
+      sendAuthorityFrontier(self, member, state)
+    end
+  end
+end
+
+local function issueWorldGrant(self, state)
+  if state.pending then return false end
+  while #state.queue > 0 do
+    local row = table.remove(state.queue, 1)
+    local client = self.clients[row.clientId]
+    local admitted = self.protocol < 19 or client and client.worldAdmission
+      and CampaignAdmission.sameBase(row.base, client.worldAdmission.grantBase)
+    if client and client.ready and sameWorld(client.worldState, state) and admitted then
+      local raw = self:newWorldToken()
+      if not raw then return false end
+      row.position = state.head + 1
+      row.grant = "world-grant-" .. raw
+      state.pending = row
+      local payload = {
+        request = row.request, grant = row.grant,
+        world = state.world, position = row.position,
+      }
+      if self.protocol >= 19 then payload.base = row.base end
+      send(client, CampaignWire.SEQUENCE_GRANT, payload)
+      return true
+    end
+    if client and self.protocol >= 19 then client.worldSequencePending = nil end
+    state.requests[worldRequestKey(row.clientId, row.request)] = nil
+  end
+  return false
+end
+
+function M:releaseWorldRequests(client)
+  for _, state in pairs(self.worldTimelines) do
+    if state.pending and state.pending.clientId == client.id then
+      -- Once the signed occupant was relayed, disconnecting its publisher
+      -- cannot make that canonical position reusable. Keep it held until any
+      -- surviving replica proves the exact resulting signed frontier.
+      if not (self.protocol >= 19 and state.pending.published) then
+        state.requests[worldRequestKey(client.id, state.pending.request)] = nil
+        state.pending = nil
+      end
+    end
+    for index = #state.queue, 1, -1 do
+      local row = state.queue[index]
+      if row.clientId == client.id then
+        state.requests[worldRequestKey(client.id, row.request)] = nil
+        table.remove(state.queue, index)
+      end
+    end
+    issueWorldGrant(self, state)
+  end
+  client.worldSequencePending = nil
+end
+
+function M:pruneWorldTimelines(excludingId)
+  for key, state in pairs(self.worldTimelines) do
+    local occupied = false
+    for id, client in pairs(self.clients) do
+      if id ~= excludingId and client.ready and sameWorld(client.worldState, state) then
+        occupied = true
+        break
+      end
+    end
+    if not occupied and not state.pending and #state.queue == 0 then
+      self.worldTimelines[key] = nil
+    end
+  end
+end
+
+handlers[CampaignWire.ADVERTISE] = function(self, client, msg)
+  if not client.ready then return end
+  local inventory = CampaignWire.worldInventory(msg.inventory)
+  local frontier = self.protocol >= 19 and CampaignWire.worldFrontier(msg.frontier) or nil
+  if not inventory or (self.protocol >= 19
+    and (not frontier or not inventoryMatchesFrontier(inventory, frontier))) then return end
+  for id, other in pairs(self.clients) do
+    if id ~= client.id and other.ready and sameWorld(other.worldState, inventory)
+      and other.worldState.player == inventory.player then
+      send(client, CampaignWire.UNAVAILABLE, { reason = "duplicate_player" })
+      return
+    end
+  end
+  if client.worldState and (not sameWorld(client.worldState, inventory)
+    or client.worldState.player ~= inventory.player) then
+    self:releaseWorldRequests(client)
+    self:pruneWorldTimelines(client.id)
+  end
+  local previousAdmission = client.worldAdmission
+  client.worldState = inventory
+  client.worldFrontier, client.worldAdmission = frontier, nil
+  local state = worldTimeline(self, inventory, frontier)
+  if self.protocol >= 19 then
+    local pending = state.pending
+    local advancesPosition = pending and pending.published
+      and frontier.timelineHead == pending.position
+      and frontier.timelineHead == state.head + 1
+    local advancesActorHeads = state.frontier
+      and advancesOwnActorHead(state.frontier, frontier, inventory.player)
+    local advancesRecovered = advancesFromRelayedEvidence(state, frontier,
+      inventory.player)
+    if advancesPosition or advancesActorHeads or advancesRecovered then
+      state.frontier, state.head = frontier, frontier.timelineHead
+      pruneWorldEvidence(state)
+      publishAuthorityFrontier(self, state)
+    elseif previousAdmission and sameFrontier(frontier, state.frontier)
+      and previousAdmission.authorityRevision == state.frontier.revision
+      and previousAdmission.grantBase.position == state.head + 1
+      and previousAdmission.grantBase.baseDigest == state.frontier.canonicalDigest then
+      client.worldAdmission = previousAdmission
+    else
+      sendAuthorityFrontier(self, client, state)
+    end
+  else
+    send(client, CampaignWire.READY,
+      { world = inventory.world, player = inventory.player })
+  end
+  for id, other in pairs(self.clients) do
+    if other.ready and id ~= client.id and sameWorld(other.worldState, inventory) then
+      send(client, CampaignWire.ADVERTISE, { from = id, inventory = other.worldState })
+      send(other, CampaignWire.ADVERTISE, { from = client.id, inventory = inventory })
+    end
+  end
+end
+
+handlers[CampaignWire.FRONTIER_ACK] = function(self, client, msg)
+  if self.protocol < 19 or not client.ready or not client.worldState
+    or not client.worldFrontier then return end
+  local admission = CampaignWire.worldFrontierAdmission(msg.admission)
+  local state = worldTimeline(self, client.worldState)
+  if not admission or not state.frontier
+    or not sameFrontier(admission.frontier, client.worldFrontier)
+    or admission.authorityRevision ~= state.frontier.revision
+    or admission.grantBase.world ~= state.world
+    or admission.grantBase.compatibility ~= state.compatibility
+    or admission.grantBase.position ~= state.head + 1
+    or admission.grantBase.baseDigest ~= state.frontier.canonicalDigest
+    or admission.grantBase.authorityRevision ~= state.frontier.revision then return end
+  client.worldAdmission = admission
+  send(client, CampaignWire.FRONTIER_READY, { admission = admission })
+
+  -- A published position is not released by the control message alone. The
+  -- resulting signed frontier must be advertised and exactly acknowledged;
+  -- only then can the next queued writer observe a stable canonical base.
+  local row = state.pending
+  if row and row.published and state.head == row.position then
+    local writer = self.clients[row.clientId]
+    if writer then writer.worldSequencePending = nil end
+    state.requests[worldRequestKey(row.clientId, row.request)] = nil
+    state.pending = nil
+    issueWorldGrant(self, state)
+  end
+end
+
+handlers[CampaignWire.EVENTS] = function(self, client, msg)
+  if not client.ready then return end
+  local envelope = CampaignWire.worldBatch(msg.envelope)
+  if not (envelope and sameWorld(client.worldState, envelope)) then return end
+  local targetId = Wire.id(msg.to)
+  if not targetId then
+    for _, event in ipairs(envelope.events) do
+      if event.actor ~= client.worldState.player then return end
+    end
+    local state = worldTimeline(self, client.worldState)
+    local row, positioned, matched = state.pending, false, false
+    for _, event in ipairs(envelope.events) do
+      if event.position then
+        positioned = true
+        if row and row.clientId == client.id and event.owner == "world"
+          and event.position == row.position and event.actor == row.actor
+          and event.kind == row.kind and event.subject == row.subject then
+          matched = true
+        end
+      end
+    end
+    if positioned and not matched then return end
+    if matched then row.published = true end
+  end
+  if targetId then
+    local target = self.clients[targetId]
+    if target and target.ready and sameWorld(target.worldState, envelope) then
+      if self.protocol >= 19 then
+        recordWorldEvidence(worldTimeline(self, client.worldState), envelope.events)
+      end
+      send(target, CampaignWire.EVENTS, { from = client.id, envelope = envelope })
+    end
+    return
+  end
+  if self.protocol >= 19 then
+    recordWorldEvidence(worldTimeline(self, client.worldState), envelope.events)
+  end
+  for id, target in pairs(self.clients) do
+    if id ~= client.id and target.ready and sameWorld(target.worldState, envelope) then
+      send(target, CampaignWire.EVENTS, { from = client.id, envelope = envelope })
+    end
+  end
+end
+
+handlers[CampaignWire.INVITE] = function(self, client, msg)
+  if not client.ready then return end
+  local target = self.clients[Wire.id(msg.to)]
+  local invitation = CampaignWire.worldInvitation(msg.invitation)
+  if not (target and target.ready and invitation and client.worldState) then return end
+  if not sameWorld(client.worldState, invitation)
+    or invitation.inviter ~= client.worldState.player then return end
+  send(target, CampaignWire.INVITE, { from = client.id, name = client.name,
+    invitation = invitation })
+end
+
+handlers[CampaignWire.SEQUENCE_REQUEST] = function(self, client, msg)
+  if not (client.ready and client.worldState) then return end
+  local request = CampaignWire.worldSequenceRequest(msg)
+  local base = self.protocol >= 19 and CampaignWire.worldGrantBase(msg.base) or nil
+  if not request or request.actor ~= client.worldState.player
+    or client.worldSequencePending or (self.protocol >= 19
+      and (not base or not client.worldAdmission
+        or not CampaignAdmission.sameBase(base, client.worldAdmission.grantBase))) then return end
+  local state = worldTimeline(self, client.worldState)
+  local key = worldRequestKey(client.id, request.request)
+  if state.requests[key] then return end
+  state.requests[key] = true
+  client.worldSequencePending = key
+  state.queue[#state.queue + 1] = { clientId = client.id,
+    request = request.request, actor = request.actor,
+    kind = request.kind, subject = request.subject, base = base }
+  issueWorldGrant(self, state)
+end
+
+handlers[CampaignWire.SEQUENCE_COMMIT] = function(self, client, msg)
+  if not (client.ready and client.worldState) then return end
+  local commit = CampaignWire.worldSequenceCommit(msg)
+  local state = worldTimeline(self, client.worldState)
+  local row = state.pending
+  if not (commit and row and row.clientId == client.id
+    and row.request == commit.request and row.grant == commit.grant
+    and row.position == commit.position and commit.world == state.world
+    and commit.position == state.head + 1 and row.published == true) then return end
+  if self.protocol >= 19 then
+    row.committed = true
+  else
+    state.head = row.position
+    client.worldSequencePending = nil
+    state.requests[worldRequestKey(client.id, row.request)] = nil
+    state.pending = nil
+    issueWorldGrant(self, state)
+  end
+end
+
+handlers[CampaignWire.SEQUENCE_CANCEL] = function(self, client, msg)
+  if not (client.ready and client.worldState) then return end
+  local cancel = CampaignWire.worldSequenceCancel(msg)
+  local state = worldTimeline(self, client.worldState)
+  local row = state.pending
+  if not (cancel and row and row.clientId == client.id
+    and row.request == cancel.request and row.grant == cancel.grant) then return end
+  -- Cancellation can release an unused reservation, never a signed occupant
+  -- that peers may already have accepted. Protocol 19 holds the latter until
+  -- an exact resulting frontier proves what occupies the position.
+  if self.protocol >= 19 and row.published then return end
+  state.requests[worldRequestKey(client.id, row.request)] = nil
+  client.worldSequencePending = nil
+  state.pending = nil
+  issueWorldGrant(self, state)
+end
+
 
 handlers[Wire.PING] = function(self, client)
   send(client, Wire.PONG, {})
