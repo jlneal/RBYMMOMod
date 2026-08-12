@@ -111,7 +111,8 @@ M.RESOLVE_TIMEOUT     = 30    -- Config.BATTLE_RESOLVE_TIMEOUT
 M.TIE_BREAK_ROLL = 128
 
 M.MODES = {
-  ["1v1"] = true, coop_npc = true, coop_pvp = true, wild = true, coop_wild = true,
+  ["1v1"] = true, coop_npc = true, coop_pvp = true, wild = true,
+  coop_wild = true, campaign_npc = true,
 }
 M.SIDES = { "a", "b" }
 
@@ -780,16 +781,22 @@ function Battle:_anyDisconnected()
   return false
 end
 
--- Flexible Wild membership changes only at a pristine choice boundary. Once
--- anybody has answered, changing the field would reinterpret an action that
--- was committed against the old roster; the hub queues until the next turn.
+-- Flexible membership changes only before a human has committed at a choice
+-- boundary. Synthetic trainer/wild seats are auto-picked as soon as the turn
+-- opens; those deterministic choices do not constitute player intent and may
+-- safely keep their already-valid target when the second ally is admitted.
 function Battle:canChangeSeats()
-  if self.result or self.mode ~= "coop_wild" or self.phase ~= "choice" then
+  if self.result or (self.mode ~= "coop_wild" and self.mode ~= "campaign_npc")
+    or self.phase ~= "choice" then
     return false
   end
   if self.forcedPending then return false end
   for _, fighter in ipairs(self.fighters) do
-    if fighter.choice ~= nil then return false end
+    if self.mode == "campaign_npc" then
+      if fighter.choiceByPlayer == true then return false end
+    elseif fighter.choice ~= nil then
+      return false
+    end
   end
   return true
 end

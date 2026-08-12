@@ -151,7 +151,9 @@ M.MOD_ID = "rby_mmo"
 -- Protocol-10 observers would draw a flying trainer on the ground and could
 -- claim encounters from the wrong vertical band.
 -- In this combined line that is generation 27, after shared field populations.
-M.PROTOCOL = 27
+-- 28 adds live `campaign_npc` trainer sessions: one player may begin against
+-- the trainer while an eligible second player joins at a clean turn boundary.
+M.PROTOCOL = 28
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.
@@ -509,7 +511,8 @@ M.COOP_STALL_TIMEOUT = 75
 -- The host-sim CoopSim path for those modes was removed so BattleSim and engine
 -- ItemEffects cannot diverge mid-match. `CoopBattle.mediates` hard-codes the
 -- mediated modes; this table stays as the documented surface for e2e / docs.
-M.MEDIATED_COOP = { coop_pvp = true, coop_npc = true, coop_wild = true }
+M.MEDIATED_COOP = { coop_pvp = true, coop_npc = true, coop_wild = true,
+  campaign_npc = true }
 
 -- How long a battle waits for a player who has dropped mid-fight.
 --

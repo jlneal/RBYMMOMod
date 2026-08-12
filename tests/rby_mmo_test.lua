@@ -269,6 +269,12 @@ eq(#exports.servers(), 0, "with nothing on the list before a hub answers")
 -- for real -- so the seat it is watched through has to exist here.
 check(type(exports.coopAsk) == "function", "exports coopAsk")
 eq(exports.coopAsk(), nil, "with nothing asked before connecting")
+check(type(exports.battleContextCapabilities) == "function",
+  "exports battle-context capabilities")
+local battleCaps = exports.battleContextCapabilities()
+eq(table.concat(battleCaps, ","),
+  "automatic-trainer-second-slot,late-trainer-join-through-active-battle,trainer-flee-policy",
+  "and advertises only the campaign trainer policies it executes")
 
 -- Vanilla must be untouched.  This mod adds multiplayer; it does not change
 -- Gen 1 content, which is exactly what affects_link=false promises about
@@ -6588,6 +6594,37 @@ pump(bob)
 answerConfirm(bob, true)
 pump(ann); pump(bob)
 eq(ann.party:has(), true, "ANN and BOB are a party")
+
+-- ------- a content-declared trainer slot skips both players' prompts
+
+ann.coop.battleContext = function()
+  return { occurrence = "rby:route22:ann.1", definition = "0123456789abcdef",
+    requirements = { joinPolicy = "automatic-second-slot",
+      enrollmentCutoff = "resolution", fleeAllowed = false } }
+end
+ann.chosen, bob.confirmBox = nil, nil
+eq(engage(ann), true,
+  "a declared trainer encounter immediately opens its automatic second slot")
+eq(ann.coop.waiting.mode, "campaign_trainer",
+  "the standing offer is distinguished from ordinary trainer proximity")
+pump(bob)
+eq(bob.confirmBox, nil, "the second player is not shown a JOIN confirmation")
+eq(bob.coop:pendingOffer(), nil,
+  "the declared offer is consumed automatically on the same map")
+-- Stop before the synthetic harness assembles a real battle; subsequent
+-- assertions exercise the unchanged ordinary prompt path from clean state.
+ann.coop:withdraw("alone")
+ann.coop.encounter, ann.coop.waiting = nil, nil
+ann.coop.battleContext = nil
+ann.client.coopOffer, bob.client.coopOffer = nil, nil
+ann.client.coopBattleId, ann.client.battleId = nil, nil
+bob.client.coopBattleId, bob.client.battleId = nil, nil
+hub.battles = {}
+hub.coopBattles = {}
+ann.peer.outbox, bob.peer.outbox = {}, {}
+ann.chosen, bob.confirmBox, bob.coop.offer = nil, nil, nil
+while ann.stack:top() do ann.stack:pop() end
+while bob.stack:top() do bob.stack:pop() end
 
 -- ------- the first player reaches the trainer
 

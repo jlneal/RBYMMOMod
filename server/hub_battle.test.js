@@ -426,6 +426,40 @@ function testCoopWildSeating() {
   ok(crowd === null, 'coop_wild refuses with three humans');
 }
 
+function testCampaignTrainerAdmission() {
+  const clock = makeClock();
+  const relay = makeRelay(clock);
+  const a = dial(relay, 'CAMPA');
+  const b = dial(relay, 'CAMPB');
+  const record = relay.openMediatedBattle('campaign-live', {
+    mode: 'campaign_npc', hostId: a.id, memberIds: [a.id],
+    eligibleIds: [a.id, b.id],
+  });
+  ok(record && record.sides.a.length === 1 && record.npcIds.length === 1,
+    'a campaign trainer begins as the native-shaped 1x1');
+  relay.fillBattleParty(record, relay.get(a.id), {
+    battle: record.id, side: 'a', mons: [mon(1, 999)], bag: [],
+  });
+  relay.fillBattleParty(record, relay.get(a.id), {
+    battle: record.id, side: 'b',
+    mons: [mon(1, 999)], bag: [],
+  });
+  record.ruleset = { chart: [[100]] };
+  ok(relay.tryStartSim(record),
+    "the lone initiator's trainer battle starts immediately");
+  ok(relay.queueBattleAdmission(record, relay.get(b.id), {
+    battle: record.id, side: 'a', mons: [mon(3, 999)], bag: [],
+  }), 'a second player joins the live trainer battle at its clean boundary');
+  ok(record.sides.a[1] === b.id,
+    'the late trainer ally occupies the second seat');
+  record.fleeAllowed = false;
+  relay.handle(a.id, {
+    type: 'mmo.battle_choice', battle: record.id, action: 'run',
+  });
+  ok(record.sim.byId.get(a.id).choice == null,
+    'the hub rejects fleeing when canonical trainer content forbids it');
+}
+
 function testFlexibleWildAdmissionBoundary() {
   const clock = makeClock();
   const relay = makeRelay(clock);
@@ -754,6 +788,7 @@ testRelayHardCutDuringBattle();
 testDisconnectForfeitAfterGrace();
 testDrawCarriesNoLists();
 testCoopNpcMediated();
+testCampaignTrainerAdmission();
 testCoopWildSeating();
 testFlexibleWildAdmissionBoundary();
 testFlexibleWildSecondTarget();

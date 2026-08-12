@@ -1329,16 +1329,22 @@ function M:openMediatedBattle(id, plan)
   end
   if #memberIds == 0 then return nil end
 
-  -- Accept coop_wild explicitly so seating works before Turn.MODES gains it (T3).
-  local mode = (Turn.MODES[plan.mode] or plan.mode == "coop_wild") and plan.mode
+  local mode = Turn.MODES[plan.mode] and plan.mode
     or ((#memberIds <= 2) and "1v1" or "coop_pvp")
-  -- Flexible coop_wild starts as 1v1 and may admit the second human later.
-  if mode == "coop_wild" and (#memberIds < 1 or #memberIds > 2) then return nil end
+  -- Flexible campaign and Wild sessions start with one human and may admit a
+  -- second at a pristine choice boundary.
+  if (mode == "coop_wild" or mode == "campaign_npc")
+    and (#memberIds < 1 or #memberIds > 2) then return nil end
   local hostId = plan.hostId or memberIds[1]
   local npcIds = nil
   if mode == "coop_npc" then
     npcIds = {}
     for i = 1, Config.COOP_SIDE do
+      npcIds[i] = "n" .. tostring(id) .. string.char(96 + i)
+    end
+  elseif mode == "campaign_npc" then
+    npcIds = {}
+    for i = 1, #memberIds do
       npcIds[i] = "n" .. tostring(id) .. string.char(96 + i)
     end
   elseif mode == "wild" or mode == "coop_wild" then
@@ -1351,7 +1357,8 @@ function M:openMediatedBattle(id, plan)
   if not sides then
     if mode == "1v1" then
       sides = { a = { memberIds[1] }, b = { memberIds[2] or memberIds[1] } }
-    elseif mode == "coop_npc" or mode == "wild" or mode == "coop_wild" then
+    elseif mode == "coop_npc" or mode == "campaign_npc"
+      or mode == "wild" or mode == "coop_wild" then
       sides = { a = memberIds, b = npcIds }
     else
       local mid = math.ceil(#memberIds / 2)
@@ -1405,13 +1412,28 @@ function M:openMediatedBattle(id, plan)
   return record
 end
 
+function M:ensureCampaignNpcSeats(record, count)
+  if not (record and record.mode == "campaign_npc") then return false end
+  count = math.min(Config.COOP_SIDE, math.max(1, math.floor(count or 1)))
+  record.npcIds = record.npcIds or {}
+  record.sides.b = record.sides.b or {}
+  while #record.npcIds < count do
+    local index = #record.npcIds + 1
+    local id = "n" .. tostring(record.id) .. string.char(96 + index)
+    record.npcIds[index] = id
+    record.sides.b[index] = id
+  end
+  return true
+end
+
 -- Build the exact fighter sheet Turn.create / Turn:admit consumes.
 function M:battleFighter(record, seat)
   local party = record and record.parties[seat]
   if not party then return nil end
   local client = self.clients[seat]
   record.bags = record.bags or {}
-  if not record.bags[seat] and record.mode == "coop_npc"
+  if not record.bags[seat]
+      and (record.mode == "coop_npc" or record.mode == "campaign_npc")
       and self:isNpcSeat(record, seat) then
     record.bags[seat] = self:cloneBagMap(Turn.DEFAULT_NPC_BAG)
   end
@@ -1432,7 +1454,8 @@ end
 -- sanitized before this method is called and retained exactly once; later
 -- attempts cannot replace it while waiting for the next clean boundary.
 function M:queueBattleAdmission(record, client, party)
-  if not (record and client and party) or record.mode ~= "coop_wild"
+  if not (record and client and party)
+     or (record.mode ~= "coop_wild" and record.mode ~= "campaign_npc")
      or not record.sim or record.settled or record.historyComplete == false then return false end
   if not record.eligibleIds[client.id] then return false end
   if record.sim.byId[client.id] and record.sim.byId[client.id].present ~= false then
@@ -1627,7 +1650,8 @@ function M:battleSeat(record, client, party)
     if memberId == client.id then member = true break end
   end
   if not member then return nil end
-  if record.mode == "coop_npc" and party.side == "b"
+  if (record.mode == "coop_npc" or record.mode == "campaign_npc")
+     and party.side == "b"
      and client.id == record.hostId and record.npcIds then
     return record.npcIds[1]
   end
@@ -2198,6 +2222,10 @@ end
 -- the next fight they were offered would find a seat already taken.
 function M:clearBattle(record)
   if not record then return end
+  local host = self.clients[record.hostId or ""]
+  if host and host.coopOffer and host.coopOffer.plan == record.id then
+    self:clearCoopOffer(host, "started")
+  end
   for _, memberId in ipairs(record.memberIds) do
     local member = self.clients[memberId]
     if member and member.battleId == record.id then member.battleId = nil end
@@ -3018,8 +3046,8 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
   local partner = self:partnerOf(client)
   if not partner then return end
 
-  -- Optional mode: only coop_wild is stored (Party vs Wild auto-join). Absent
-  -- keeps the trainer WAIT/JOIN invite path.
+  -- Flexible modes open immediately with the initiator and retain a bounded
+  -- eligible second seat. Absent keeps the trainer WAIT/JOIN invite path.
   local mode = Wire.coopOfferMode(msg.mode)
   if mode == "coop_wild" and not self.wildCoopEnabled then return end
   local label = Wire.label(msg.label)
@@ -3034,7 +3062,7 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
     -- the fight was still joinable.
     startedAt = self.clock,
   }
-  if mode == "coop_wild" then
+  if mode == "coop_wild" or mode == "campaign_trainer" then
     local id = "c" .. tostring(self.nextCoopAsk)
     self.nextCoopAsk = self.nextCoopAsk + 1
     client.coopOffer.plan = id
@@ -3042,8 +3070,9 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
     local partnerEligible = self.offMapJoinEnabled
       or (map ~= nil and partner.map == map)
     if partnerEligible then eligible[#eligible + 1] = partner.id end
+    local battleMode = mode == "coop_wild" and "coop_wild" or "campaign_npc"
     self:openCoopBattle(id, { client.id }, {
-      mode = "coop_wild", hostId = client.id,
+      mode = battleMode, hostId = client.id,
       eligibleIds = eligible,
     })
     local record = self.battles[id]
@@ -3111,9 +3140,22 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
   end
   if offer.mode == "coop_wild" and not self.wildCoopEnabled then return end
 
-  if offer.mode == "coop_wild" and offer.plan then
+  if (offer.mode == "coop_wild" or offer.mode == "campaign_trainer")
+      and offer.plan then
     local record = self.battles[offer.plan]
-    if not (record and record.sim and record.historyComplete ~= false) then
+    if not record or record.historyComplete == false then
+      send(client, Wire.COOP_OFFER_END, { reason = "alone" })
+      return
+    end
+    if offer.mode == "campaign_trainer" and not record.sim then
+      if not record.eligibleIds[client.id] or #record.memberIds >= Config.COOP_SIDE then
+        send(client, Wire.COOP_OFFER_END, { reason = "alone" })
+        return
+      end
+      record.memberIds[#record.memberIds + 1] = client.id
+      record.sides.a[#record.sides.a + 1] = client.id
+      self:ensureCampaignNpcSeats(record, #record.memberIds)
+    elseif not record.sim then
       send(client, Wire.COOP_OFFER_END, { reason = "alone" })
       return
     end
@@ -3129,7 +3171,7 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
       { id = client.id, name = client.name, plan = record.id, late = true })
     send(client, Wire.COOP_BATTLE, {
       id = record.id, side = "a", allies = members, battle = battle,
-      host = host.id, mode = "coop_wild", late = true,
+      host = host.id, mode = record.mode, late = true,
     })
     return
   end
@@ -3218,6 +3260,9 @@ handlers[Wire.COOP_RELAY] = function(self, client, msg)
     elseif msg.payload.t == "field" and client.id == mediated.hostId then
       mediated.packedField = msg.payload.field
       local field = msg.payload.field
+      if type(field) == "table" and field.fleeAllowed == false then
+        mediated.fleeAllowed = false
+      end
       local occurrence = type(field) == "table"
         and CampaignIdentity.identifier(field.campaignOccurrence, 96) or nil
       local definition = type(field) == "table"
@@ -3400,7 +3445,8 @@ handlers[Wire.BATTLE_PARTY] = function(self, client, msg)
   if party.battle ~= record.id then return end
 
   if record.sim then
-    if record.mode ~= "coop_wild" or party.side ~= "a"
+    if (record.mode ~= "coop_wild" and record.mode ~= "campaign_npc")
+      or party.side ~= "a"
        or not record.eligibleIds[client.id] then return end
     if not self:sendBattleCatchup(record, client) then return end
     self:queueBattleAdmission(record, client, party)
@@ -3421,6 +3467,7 @@ handlers[Wire.BATTLE_CHOICE] = function(self, client, msg)
 
   local choice = Wire.battleChoice(msg)
   if not choice or choice.battle ~= record.id then return end
+  if choice.action == "run" and record.fleeAllowed == false then return end
   -- Item choices are proved against the bag uploaded with the party
   -- (PROTOCOL 15). A missing stack costs the message and nothing else —
   -- same silence as a refused choice — so the turn clock keeps running.

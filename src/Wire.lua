@@ -77,8 +77,9 @@ M.RANKS         = "mmo.ranks"
 -- friend is waiting", because only the hub knows who is in the party.
 --
 -- COOP_WAIT carries { battle, label, map [, mode] } -- the fight this player is
--- standing in front of.  Optional `mode` is only `"coop_wild"` (Party vs Wild
--- auto-join); absent means the trainer WAIT/JOIN invite path.  COOP_CANCEL
+-- standing in front of. `coop_wild` is Party vs Wild; `campaign_trainer` is a
+-- content-declared automatic second slot. Absent keeps trainer WAIT/JOIN.
+-- COOP_CANCEL
 -- withdraws it with an optional reason (`alone` / `left` / `timeout` from the
 -- waiter; `no` from the partner who declined the invite). Naming which offer
 -- is unnecessary: there is only ever one per player.  COOP_JOIN answers
@@ -985,6 +986,7 @@ function M.coopField(raw)
            trainerPartyIndex = trainerPartyIndex,
            campaignOccurrence = campaignOccurrence,
            campaignDefinition = campaignDefinition,
+           fleeAllowed = raw.fleeAllowed ~= false,
            rewardExp = raw.rewardExp ~= false,
            rewardMoney = raw.rewardMoney ~= false,
            flexibleWild = flexibleWild }
@@ -997,10 +999,11 @@ function M.battleKey(value)
   return value
 end
 
--- Optional wait/offer mode. Only `coop_wild` is meaningful; anything else
--- (including absent) is nil so the trainer invite path stays the default.
+-- Optional wait/offer mode. Campaign trainer is deliberately distinct from
+-- proximity auto-join: the former was declared by canonical content, while
+-- the latter is a player/server convenience setting.
 function M.coopOfferMode(value)
-  if value == "coop_wild" then return "coop_wild" end
+  if value == "coop_wild" or value == "campaign_trainer" then return value end
   return nil
 end
 
@@ -1009,8 +1012,8 @@ end
 -- missing label is fine and common -- a script-driven battle need not name its
 -- trainer -- so it degrades to nil and the screen says "a battle" instead of
 -- refusing the whole offer over a cosmetic field.  Optional `mode` is only
--- `coop_wild` (auto-join Party vs Wild); unknown values are dropped, not a
--- refuse of the whole offer.
+-- `coop_wild` (auto-join Party vs Wild) or `campaign_trainer` (content-declared
+-- enrollment); unknown values are dropped, not a refusal of the whole offer.
 function M.coopOffer(raw)
   if type(raw) ~= "table" then return nil end
   local from = M.id(raw.from)
@@ -2007,7 +2010,8 @@ end
 -- inference that is right until an NPC battle happens to have a spectatorless
 -- second slot.
 M.BATTLE_MODES = {
-  ["1v1"] = true, coop_npc = true, coop_pvp = true, wild = true, coop_wild = true,
+  ["1v1"] = true, coop_npc = true, coop_pvp = true, wild = true,
+  coop_wild = true, campaign_npc = true,
 }
 
 function M.battleMode(value)

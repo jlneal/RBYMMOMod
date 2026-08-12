@@ -397,6 +397,7 @@ function M.new(game, opts)
     partyIndex = opts.partyIndex or opts.trainerPartyIndex,
     campaignOccurrence = opts.campaignOccurrence,
     campaignDefinition = opts.campaignDefinition,
+    fleeAllowed = opts.fleeAllowed ~= false,
     trainerPic = opts.trainerPic,
     endBattleText = opts.endBattleText,
     -- Whether winning this one moves anybody's rating. Handed in rather than
@@ -591,6 +592,7 @@ function M:announce(name, extra)
     trainerPartyIndex = self.trainerPartyIndex,
     campaignOccurrence = self.campaignOccurrence,
     campaignDefinition = self.campaignDefinition,
+    fleeAllowed = self.fleeAllowed,
     -- Whether it moves anybody's rating -- see Coop.ranksPoints.
     ranked = self.ranksPoints and true or false,
     slots = {},
@@ -1490,7 +1492,11 @@ function M:updateCommand(input)
       -- ends the battle for four people and books the pair who left a ranked
       -- loss, so the other half of that pair is asked first (M:askToRun).
       -- Nothing is committed until they answer -- see the state machine there.
-      if self.mode == "coop_wild" then
+      if self.fleeAllowed == false then
+        self.phase = "messages"
+        self.after = "choose"
+        self:say("No! There's no running\nfrom this battle!")
+      elseif self.mode == "coop_wild" then
         self:commit({ slot = self.mine, kind = "run" })
       elseif self:partyBattle() then
         self:askToRun()
@@ -5274,6 +5280,7 @@ end
 -- ItemEffects must not diverge). CoopSim remains for field layout / tests.
 function M.mediates(mode)
   return mode == "coop_pvp" or mode == "coop_npc" or mode == "coop_wild"
+    or mode == "campaign_npc"
 end
 
 -- ------- 1. what we are bringing
@@ -5373,7 +5380,7 @@ function M:uploadMediated()
   -- side-"b" party from the host of a coop_npc onto the synthetic npc seat
   -- rather than displacing the host's own, which is why this can be a second
   -- mmo.battle_party on the same connection.
-  if self.host and self.mode == "coop_npc" then
+  if self.host and (self.mode == "coop_npc" or self.mode == "campaign_npc") then
     local npc = self:npcMons()
     if npc and #npc > 0 then
       Mediated.sendParty(self.transport, self.battleId, npc, "b")

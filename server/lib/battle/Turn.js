@@ -89,6 +89,7 @@ const TIE_BREAK_ROLL = 128;
 
 const MODES = {
   '1v1': true, coop_npc: true, coop_pvp: true, wild: true, coop_wild: true,
+  campaign_npc: true,
 };
 const SIDES = ['a', 'b'];
 
@@ -746,12 +747,15 @@ class Battle {
     );
   }
 
-  // Flexible Wild membership changes only at a pristine choice boundary.
+  // Flexible membership changes before a human commits at a choice boundary.
+  // Synthetic seats auto-pick immediately; that is not player intent.
   canChangeSeats() {
-    if (this.result || this.mode !== 'coop_wild' || this.phase !== 'choice') return false;
+    if (this.result || (this.mode !== 'coop_wild' && this.mode !== 'campaign_npc')
+        || this.phase !== 'choice') return false;
     if (this.forcedPending) return false;
-    return this.fighters.every((fighter) => fighter.choice === null
-      || fighter.choice === undefined);
+    return this.fighters.every((fighter) => (this.mode === 'campaign_npc'
+      ? fighter.choiceByPlayer !== true
+      : fighter.choice === null || fighter.choice === undefined));
   }
 
   // Add the second human, or restore the same retained in-battle seat after a

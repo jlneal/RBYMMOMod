@@ -768,6 +768,34 @@ end
 
 do
   local hub = Hub.new({ maxPlayers = 4 })
+  hub.forceBattleSeed = 1
+  local ann = join(hub, "ANN")
+  local bob = join(hub, "BOB")
+  local record = hub:openMediatedBattle("campaign-live", {
+    mode = "campaign_npc", hostId = ann.id, memberIds = { ann.id },
+    eligibleIds = { ann.id, bob.id },
+  })
+  ok(record ~= nil and #record.sides.a == 1 and #record.npcIds == 1,
+    "a campaign trainer begins as the native-shaped 1x1")
+  hub:fillBattleParty(record, ann, { battle = record.id, side = "a",
+    mons = { mon({ hp = 999 }) } })
+  hub:fillBattleParty(record, ann, { battle = record.id, side = "b",
+    mons = { mon({ species = "RIVAL_A", hp = 999 }) } })
+  record.ruleset = { chart = CHART }
+  ok(hub:tryStartSim(record), "the lone initiator's trainer battle starts immediately")
+  ok(hub:queueBattleAdmission(record, bob, { battle = record.id, side = "a",
+    mons = { mon({ species = "ALLY", hp = 999 }) } }),
+    "a second player joins the live trainer battle at its clean boundary")
+  eq(record.sides.a[2], bob.id, "the late trainer ally occupies the second seat")
+  record.fleeAllowed = false
+  hub:receive(ann, { type = Wire.BATTLE_CHOICE, battle = record.id,
+    action = "run" })
+  eq(record.sim.byId[ann.id].choice, nil,
+    "the hub rejects fleeing when canonical trainer content forbids it")
+end
+
+do
+  local hub = Hub.new({ maxPlayers = 4 })
   local ann = join(hub, "ANN")
   local bob = join(hub, "BOB")
 

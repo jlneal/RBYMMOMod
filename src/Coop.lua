@@ -612,11 +612,32 @@ function M:onTrainerBattle(game, state, mapId)
     engine = state,
     game = game,
     campaign = campaign,
+    policy = campaign and campaign.requirements or nil,
   }
 
   if self:offerMatches(key) then
+    if self.offer.mode == "campaign_trainer"
+      or (campaign and campaign.requirements
+        and campaign.requirements.joinPolicy == "automatic-second-slot") then
+      local offer = self.offer
+      self.offer = nil
+      self.transport:send(Wire.COOP_JOIN,
+        { to = offer.from, battle = offer.battle })
+      return true
+    end
     self:askToJoin(game, self.offer)
     return true
+  end
+  if campaign and campaign.requirements
+    and campaign.requirements.joinPolicy == "automatic-second-slot" then
+    local late = campaign.requirements.enrollmentCutoff == "resolution"
+    -- Without live enrollment, automatic composition is only safe when the
+    -- second player is already on this map. With it, the initiator begins now
+    -- and the offer remains joinable through the active battle.
+    if not late and not self:partnerOnMap(mapId) then
+      self.encounter = nil; return false
+    end
+    return self:beginWait("campaign_trainer")
   end
   self:askWaitOrAlone(game)
   return true
@@ -853,7 +874,7 @@ end
 -- The offer is sent immediately even when the partner is on another map: their
 -- client stores it and only raises the join confirm once they share this map
 -- (see M:considerOffer / map.entered).
-function M:beginWait()
+function M:beginWait(mode)
   local encounter = self.encounter
   if not encounter then return false end
   self.waiting = {
@@ -865,6 +886,8 @@ function M:beginWait()
     -- its result to.
     engine = encounter.engine,
     campaign = encounter.campaign,
+    policy = encounter.policy,
+    mode = mode,
     game = encounter.game,
     clock = 0,
   }
@@ -872,6 +895,7 @@ function M:beginWait()
     battle = encounter.battle,
     label = encounter.label,
     map = encounter.map,
+    mode = mode,
   })
   local name = self.party:partnerName() or "your friend"
   if self:partnerOnMap(encounter.map) then
@@ -880,7 +904,13 @@ function M:beginWait()
     self:note(("Waiting for %s to\narrive at %s."):format(
       name, fightName(encounter.label)))
   end
-  self:showWaiting()
+  if mode == "campaign_trainer" then
+    self.ui:choose(nil, "Opening shared battle...", {
+      { label = "...", onSelect = function() end },
+    })
+  else
+    self:showWaiting()
+  end
   return true
 end
 
@@ -1023,6 +1053,14 @@ function M:considerOffer(game, myMap)
     -- Wild offers remain available through the remote player's exact JOIN
     -- action when this client has opted out of automatic joining.
     return false
+  end
+
+  if offer.mode == "campaign_trainer" then
+    if self.waiting or self:inFight(game) then return false end
+    self.offer = nil
+    self.transport:send(Wire.COOP_JOIN,
+      { to = offer.from, battle = offer.battle })
+    return true
   end
 
   if self.waiting or self:inFight(game) then return false end
@@ -1422,6 +1460,7 @@ function M:onJoined(game, msg)
   -- to name and the fight stays on host CoopSim under PROTOCOL 10.
   local planId = Wire.id(msg and msg.plan)
   local wild = waiting.kind == "wild" or waiting.mode == "coop_wild"
+  local campaignTrainer = waiting.mode == "campaign_trainer"
   local allies = self.party:list()
   if msg and msg.immediate == true then
     allies = {}
@@ -1433,12 +1472,13 @@ function M:onJoined(game, msg)
   self:note(("%s joined the fight."):format(name))
   self:begin(game, {
     kind = wild and "wild" or "npc",
-    mode = wild and "coop_wild" or nil,
+    mode = wild and "coop_wild" or (campaignTrainer and "campaign_npc" or nil),
     id = planId,
     battle = waiting.battle,
     label = waiting.label,
     engine = waiting.engine,
     campaign = waiting.campaign,
+    policy = waiting.policy,
     trainer = waiting.trainer,
     wildCatchMon = waiting.wildCatchMon or M.wildMonOf(waiting.engine),
     wildMate = waiting.wildMate,
@@ -1508,7 +1548,7 @@ function M:onBattle(game, msg)
   self:closeAskBox()
   if not (side and allies) then return end
   local hostId = Wire.id(msg.host)
-  local mode = Wire.coopOfferMode(msg and msg.mode)
+  local mode = Wire.battleMode(msg and msg.mode) or Wire.coopOfferMode(msg and msg.mode)
   local wild = mode == "coop_wild"
   local engine = self:joinedEngine(game, msg, foes)
   self:begin(game, {
@@ -1915,6 +1955,7 @@ function M:buildField(game, battle, humans)
     trainerPartyIndex = plan.engine and (plan.engine.partyIndex or 1),
     campaignOccurrence = plan.campaign and plan.campaign.occurrence,
     campaignDefinition = plan.campaign and plan.campaign.definition,
+    fleeAllowed = not (plan.policy and plan.policy.fleeAllowed == false),
     -- Human-vs-human battles never mint ordinary trainer rewards. Against an
     -- NPC, the host's session policy is copied into the authoritative field
     -- so every client applies the same answer.
@@ -2119,6 +2160,7 @@ function M:startBattle(game, field)
       if plan and (plan.kind == "wild" or plan.mode == "coop_wild") then
         return "coop_wild"
       end
+      if plan and plan.mode == "campaign_npc" then return "campaign_npc" end
       if M.ranksPoints(plan) then return "coop_pvp" end
       return "coop_npc"
     end)(),
@@ -2134,6 +2176,7 @@ function M:startBattle(game, field)
     ranksPoints = M.ranksPoints(battle.plan),
     rewardExp = field.rewardExp,
     rewardMoney = field.rewardMoney,
+    fleeAllowed = field.fleeAllowed,
     net = net,
     onDone = function(outcome, toLearn)
       self:onBattleOver(outcome, game, state, toLearn)

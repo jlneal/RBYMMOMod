@@ -13,6 +13,7 @@ local Wire = need("Wire")
 local CampaignWire = need("CampaignWire")
 local CampaignStateBridge = need("CampaignStateBridge")
 local CampaignIdentity = need("CampaignIdentity")
+local BattleContext = need("BattleContext")
 local Sha256 = need("Sha256")
 local Transport = need("Transport")
 local Roster = need("Roster")
@@ -59,20 +60,16 @@ local function battleContext(state, mapId, battleKey)
   for _, id in ipairs(ids) do
     local called, raw = pcall(battleContextProviders[id], state, mapId, battleKey)
     if called and raw ~= nil then
-      local occurrence = type(raw) == "table"
-        and CampaignIdentity.identifier(raw.occurrence, 96) or nil
-      local definition = type(raw) == "table" and raw.definition or nil
-      if not occurrence or type(definition) ~= "string" or #definition ~= 16
-        or not definition:match("^[0-9a-f]+$") then
+      local context = BattleContext.normalize(raw)
+      if not context then
         mod.log:warn("battle context provider %s returned invalid context", id)
         return nil
       end
-      if selected and (selected.occurrence ~= occurrence
-        or selected.definition ~= definition) then
+      if selected and not BattleContext.same(selected, context) then
         mod.log:warn("battle context providers disagreed; no context was attached")
         return nil
       end
-      selected = { occurrence = occurrence, definition = definition }
+      selected = context
     elseif not called then
       mod.log:warn("battle context provider %s failed (%s)", id, tostring(raw))
     end
@@ -2764,6 +2761,9 @@ function M.install()
     if count >= 8 then return nil, "too many battle context providers" end
     battleContextProviders[id] = provider
     return true
+  end
+  mod.exports.battleContextCapabilities = function()
+    return BattleContext.capabilities()
   end
   mod.exports.unregisterBattleContextProvider = function(id)
     id = CampaignIdentity.identifier(id, 32)

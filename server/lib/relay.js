@@ -134,7 +134,7 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // silently ignores that lifecycle and would fork the visible world.
 // 11 adds airborne presence, mount identity, and altitude-aware SKY claims.
 // In this combined line that is generation 27, after shared field populations.
-const PROTOCOL = 27;
+const PROTOCOL = 28;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right
@@ -951,21 +951,20 @@ handlers['mmo.coop_wait'] = (relay, client, msg) => {
 
   const label = cleanLabel(msg.label);
   const map = cleanMapId(msg.map);
-  // Optional mode: only coop_wild is stored (Party vs Wild auto-join). Absent
-  // keeps the trainer WAIT/JOIN invite path.
+  // Flexible modes begin immediately and retain one eligible live seat.
   const mode = cleanCoopOfferMode(msg.mode);
   if (mode === 'coop_wild' && !relay.wildCoopEnabled) return;
   // startedAt so the sweep can expire it on the same clock the partner's
   // client already uses. Mirrors src/Hub.lua.
   client.coopOffer = { battle, label, map, mode, startedAt: relay.now() };
-  if (mode === 'coop_wild') {
+  if (mode === 'coop_wild' || mode === 'campaign_trainer') {
     const battleId = `c${relay.nextCoopAsk++}`;
     client.coopOffer.plan = battleId;
     const partnerEligible = relay.offMapJoinEnabled
       || (map !== null && partner.map === map);
     const eligibleIds = partnerEligible ? [client.id, partner.id] : [client.id];
     relay.openCoopBattle(battleId, [client.id], {
-      mode: 'coop_wild', hostId: client.id,
+      mode: mode === 'coop_wild' ? 'coop_wild' : 'campaign_npc', hostId: client.id,
       eligibleIds,
     });
     const record = relay.battles.get(battleId);
@@ -1026,9 +1025,22 @@ handlers['mmo.coop_join'] = (relay, client, msg) => {
   }
   if (offer.mode === 'coop_wild' && !relay.wildCoopEnabled) return;
 
-  if (offer.mode === 'coop_wild' && offer.plan) {
+  if ((offer.mode === 'coop_wild' || offer.mode === 'campaign_trainer')
+      && offer.plan) {
     const record = relay.battles.get(offer.plan);
-    if (!record || !record.sim || record.historyComplete === false) {
+    if (!record || record.historyComplete === false) {
+      relay.send(client, 'mmo.coop_offer_end', { reason: 'alone' });
+      return;
+    }
+    if (offer.mode === 'campaign_trainer' && !record.sim) {
+      if (!record.eligibleIds.has(client.id) || record.memberIds.length >= COOP_SIDE) {
+        relay.send(client, 'mmo.coop_offer_end', { reason: 'alone' });
+        return;
+      }
+      record.memberIds.push(client.id);
+      record.sides.a.push(client.id);
+      relay.ensureCampaignNpcSeats(record, record.memberIds.length);
+    } else if (!record.sim) {
       relay.send(client, 'mmo.coop_offer_end', { reason: 'alone' });
       return;
     }
@@ -1043,7 +1055,7 @@ handlers['mmo.coop_join'] = (relay, client, msg) => {
     });
     relay.send(client, 'mmo.coop_battle', {
       id: record.id, side: 'a', allies: liveMembers, battle,
-      host: host.id, mode: 'coop_wild', late: true,
+      host: host.id, mode: record.mode, late: true,
     });
     return;
   }
@@ -1126,6 +1138,7 @@ handlers['mmo.coop_relay'] = (relay, client, msg) => {
       // the client runs the stricter field sanitizer before constructing it.
       mediated.packedField = msg.payload.field;
       const field = msg.payload.field;
+      if (field && field.fleeAllowed === false) mediated.fleeAllowed = false;
       const occurrence = field && cleanProgressionId(field.campaignOccurrence, 96);
       const definition = field && field.campaignDefinition;
       if (occurrence && typeof definition === 'string' && /^[0-9a-f]{16}$/.test(definition)) {
@@ -1324,7 +1337,8 @@ handlers['mmo.battle_party'] = (relay, client, msg) => {
   if (party.battle !== record.id) return;
 
   if (record.sim) {
-    if (record.mode !== 'coop_wild' || party.side !== 'a'
+    if ((record.mode !== 'coop_wild' && record.mode !== 'campaign_npc')
+        || party.side !== 'a'
         || !record.eligibleIds.has(client.id)) return;
     if (!relay.sendBattleCatchup(record, client)) return;
     relay.queueBattleAdmission(record, client, party);
@@ -1345,6 +1359,7 @@ handlers['mmo.battle_choice'] = (relay, client, msg) => {
 
   const choice = cleanBattleChoice(msg);
   if (!choice || choice.battle !== record.id) return;
+  if (choice.action === 'run' && record.fleeAllowed === false) return;
   // Item choices are proved against the bag uploaded with the party
   // (PROTOCOL 15). A missing stack costs the message and nothing else —
   // same silence as a refused choice — so the turn clock keeps running.
@@ -2764,17 +2779,23 @@ class Relay {
 
     let mode = p.mode;
     if (mode !== '1v1' && mode !== 'coop_npc' && mode !== 'coop_pvp'
-        && mode !== 'wild' && mode !== 'coop_wild') {
+        && mode !== 'wild' && mode !== 'coop_wild' && mode !== 'campaign_npc') {
       mode = memberIds.length <= 2 ? '1v1' : 'coop_pvp';
     }
     // Flexible coop_wild starts as 1v1 and may admit the second human later.
-    if (mode === 'coop_wild' && (memberIds.length < 1 || memberIds.length > 2)) return null;
+    if ((mode === 'coop_wild' || mode === 'campaign_npc')
+        && (memberIds.length < 1 || memberIds.length > 2)) return null;
 
     const hostId = p.hostId || memberIds[0];
     let npcIds = null;
     if (mode === 'coop_npc') {
       npcIds = [];
       for (let i = 0; i < COOP_SIDE; i += 1) {
+        npcIds.push(`n${id}${String.fromCharCode(97 + i)}`);
+      }
+    } else if (mode === 'campaign_npc') {
+      npcIds = [];
+      for (let i = 0; i < memberIds.length; i += 1) {
         npcIds.push(`n${id}${String.fromCharCode(97 + i)}`);
       }
     } else if (mode === 'wild' || mode === 'coop_wild') {
@@ -2787,7 +2808,8 @@ class Relay {
     if (!sides || typeof sides !== 'object') {
       if (mode === '1v1') {
         sides = { a: [memberIds[0]], b: [memberIds[1] || memberIds[0]] };
-      } else if (mode === 'coop_npc' || mode === 'wild' || mode === 'coop_wild') {
+      } else if (mode === 'coop_npc' || mode === 'campaign_npc'
+          || mode === 'wild' || mode === 'coop_wild') {
         sides = { a: memberIds.slice(), b: npcIds.slice() };
       } else {
         const mid = Math.ceil(memberIds.length / 2);
@@ -2828,12 +2850,25 @@ class Relay {
     return record;
   }
 
+  ensureCampaignNpcSeats(record, count) {
+    if (!record || record.mode !== 'campaign_npc') return false;
+    const wanted = Math.min(COOP_SIDE, Math.max(1, Math.floor(count || 1)));
+    while (record.npcIds.length < wanted) {
+      const index = record.npcIds.length;
+      const id = `n${record.id}${String.fromCharCode(97 + index)}`;
+      record.npcIds.push(id);
+      record.sides.b.push(id);
+    }
+    return true;
+  }
+
   battleFighter(record, seat) {
     const party = record && record.parties.get(seat);
     if (!party) return null;
     const client = this.clients.get(seat);
     if (!record.bags) record.bags = new Map();
-    if (!record.bags.has(seat) && record.mode === 'coop_npc'
+    if (!record.bags.has(seat)
+        && (record.mode === 'coop_npc' || record.mode === 'campaign_npc')
         && this.isNpcSeat(record, seat)) {
       record.bags.set(seat, this.cloneBagMap(Turn.DEFAULT_NPC_BAG));
     }
@@ -2851,7 +2886,8 @@ class Relay {
   }
 
   queueBattleAdmission(record, client, party) {
-    if (!record || !client || !party || record.mode !== 'coop_wild'
+    if (!record || !client || !party
+        || (record.mode !== 'coop_wild' && record.mode !== 'campaign_npc')
         || !record.sim || record.settled || record.historyComplete === false) return false;
     if (!record.eligibleIds.has(client.id)) return false;
     const existing = record.sim.byId.get(client.id);
@@ -3014,7 +3050,8 @@ class Relay {
    */
   battleSeat(record, client, party) {
     if (!record.memberIds.includes(client.id)) return null;
-    if (record.mode === 'coop_npc' && party.side === 'b'
+    if ((record.mode === 'coop_npc' || record.mode === 'campaign_npc')
+        && party.side === 'b'
         && client.id === record.hostId && record.npcIds) {
       return record.npcIds[0];
     }
@@ -3544,6 +3581,10 @@ class Relay {
 
   clearBattle(record) {
     if (!record) return;
+    const host = this.clients.get(record.hostId || '');
+    if (host && host.coopOffer && host.coopOffer.plan === record.id) {
+      this.clearCoopOffer(host, 'started');
+    }
     for (const memberId of record.memberIds) {
       const member = this.clients.get(memberId);
       if (member && member.battleId === record.id) member.battleId = null;

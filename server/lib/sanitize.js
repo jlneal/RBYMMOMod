@@ -330,11 +330,11 @@ function cleanBattleKey(value) {
   return /^[\w.\-:|]+$/.test(value) ? value : null;
 }
 
-// Optional wait/offer mode. Only coop_wild is meaningful; anything else
-// (including absent) is null so the trainer invite path stays the default.
+// Optional wait/offer mode. campaign_trainer is a content-declared automatic
+// trainer slot; absent keeps the ordinary WAIT/JOIN prompt.
 // Mirrors Wire.coopOfferMode.
 function cleanCoopOfferMode(value) {
-  return value === 'coop_wild' ? 'coop_wild' : null;
+  return value === 'coop_wild' || value === 'campaign_trainer' ? value : null;
 }
 
 // Which side of a co-op battle somebody is on, and why an offer or an ask
@@ -676,7 +676,8 @@ const BATTLE_REASONS = new Set([
 // arrived, because the co-op modes share field-slot shapes and differ in who
 // owns a side -- and "guess the mode from the roster" is right until an NPC
 // battle happens to have a spectatorless second slot.
-const BATTLE_MODES = new Set(['1v1', 'coop_npc', 'coop_pvp', 'wild', 'coop_wild']);
+const BATTLE_MODES = new Set(['1v1', 'coop_npc', 'coop_pvp', 'wild', 'coop_wild',
+  'campaign_npc']);
 
 /*
  * A roster: who is on a side, who won, who lost.
