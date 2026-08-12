@@ -52,6 +52,7 @@ local need, mod = ...
 local Config = need("Config")
 local Wire = need("Wire")
 local CoopBattle = need("CoopBattle")
+local BattleContext = need("BattleContext")
 
 local M = {}
 M.__index = M
@@ -622,7 +623,7 @@ function M:onTrainerBattle(game, state, mapId)
       local offer = self.offer
       self.offer = nil
       self.transport:send(Wire.COOP_JOIN,
-        { to = offer.from, battle = offer.battle })
+        { to = offer.from, battle = offer.battle, context = campaign })
       return true
     end
     self:askToJoin(game, self.offer)
@@ -888,6 +889,7 @@ function M:beginWait(mode)
     campaign = encounter.campaign,
     policy = encounter.policy,
     mode = mode,
+    context = mode == "campaign_trainer" and encounter.campaign or nil,
     game = encounter.game,
     clock = 0,
   }
@@ -1056,11 +1058,10 @@ function M:considerOffer(game, myMap)
   end
 
   if offer.mode == "campaign_trainer" then
-    if self.waiting or self:inFight(game) then return false end
-    self.offer = nil
-    self.transport:send(Wire.COOP_JOIN,
-      { to = offer.from, battle = offer.battle })
-    return true
+    -- Canonical content must enroll this player and supply their own opponent
+    -- recipe. Merely sharing a map is not enough; onTrainerBattle sends JOIN
+    -- after the local shared scene has actually produced that context.
+    return false
   end
 
   if self.waiting or self:inFight(game) then return false end
@@ -1550,6 +1551,7 @@ function M:onBattle(game, msg)
   local hostId = Wire.id(msg.host)
   local mode = Wire.battleMode(msg and msg.mode) or Wire.coopOfferMode(msg and msg.mode)
   local wild = mode == "coop_wild"
+  local campaign = type(msg) == "table" and BattleContext.normalize(msg.context) or nil
   local engine = self:joinedEngine(game, msg, foes)
   self:begin(game, {
     kind = foes and "party" or (wild and "wild" or "npc"),
@@ -1562,6 +1564,8 @@ function M:onBattle(game, msg)
     -- stand in for it and hand it its result.  Nil on both paths that were
     -- never standing in front of anything -- see M:joinedEngine.
     engine = engine,
+    campaign = campaign,
+    policy = campaign and campaign.requirements or nil,
     wildCatchMon = wild and M.wildMonOf(engine) or nil,
     -- Derived from the id the hub named rather than assumed, so exactly one of
     -- the four believes it is the host.
@@ -1979,7 +1983,9 @@ end
 -- would be doing the same work twice and risking a different answer.
 function M:npcSide(game, plan)
   local engine = plan.engine
-  local party = engine and engine.enemyParty
+  local opponent = plan.policy and plan.policy.opponent
+  local party = opponent and CoopBattle.trainerParty(game,
+    opponent.trainerClass, opponent.partyIndex) or (engine and engine.enemyParty)
   -- Wild battles (and coop_wild plans) carry one mon on wildCatchMon / enemy.mon
   -- rather than enemyParty. Feed that into the same pack path so buildField
   -- still produces a side-b slot the screen can draw.
@@ -2177,6 +2183,8 @@ function M:startBattle(game, field)
     rewardExp = field.rewardExp,
     rewardMoney = field.rewardMoney,
     fleeAllowed = field.fleeAllowed,
+    opponent = battle.plan and battle.plan.policy
+      and battle.plan.policy.opponent or nil,
     net = net,
     onDone = function(outcome, toLearn)
       self:onBattleOver(outcome, game, state, toLearn)

@@ -337,6 +337,32 @@ function cleanCoopOfferMode(value) {
   return value === 'coop_wild' || value === 'campaign_trainer' ? value : null;
 }
 
+function cleanBattleContext(value) {
+  if (!value || typeof value !== 'object') return null;
+  const occurrence = cleanProgressionId(value.occurrence, 96);
+  const definition = typeof value.definition === 'string'
+    && /^[0-9a-f]{16}$/.test(value.definition) ? value.definition : null;
+  const raw = value.requirements;
+  if (!occurrence || !definition || !raw || typeof raw !== 'object') return null;
+  const allowed = new Set(['joinPolicy', 'enrollmentCutoff', 'fleeAllowed',
+    'opponentPolicy', 'opponent']);
+  if (Object.keys(raw).some((key) => !allowed.has(key))) return null;
+  const opponent = raw.opponent;
+  const partyIndex = opponent && cleanInt(opponent.partyIndex, 1, 255);
+  const trainerClass = opponent && cleanId(opponent.trainerClass);
+  const owner = opponent && cleanProgressionId(opponent.owner, 64);
+  const rival = opponent && cleanProgressionId(opponent.rival, 96);
+  if (raw.joinPolicy !== 'automatic-second-slot'
+      || raw.enrollmentCutoff !== 'resolution' || raw.fleeAllowed !== false
+      || raw.opponentPolicy !== 'paired-rival' || !partyIndex
+      || !trainerClass || !owner || !rival) return null;
+  return { occurrence, definition, requirements: {
+    joinPolicy: raw.joinPolicy, enrollmentCutoff: raw.enrollmentCutoff,
+    fleeAllowed: false, opponentPolicy: raw.opponentPolicy,
+    opponent: { trainerClass, partyIndex, owner, rival },
+  } };
+}
+
 // Which side of a co-op battle somebody is on, and why an offer or an ask
 // ended. Both are closed sets rather than free text: each value picks a
 // different sentence on the client, and an unknown one has to degrade to the
@@ -1435,6 +1461,7 @@ module.exports = {
   cleanId,
   cleanMember,
   cleanBattleKey,
+  cleanBattleContext,
   cleanCoopOfferMode,
   cleanLabel,
   cleanSide,

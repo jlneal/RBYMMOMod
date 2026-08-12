@@ -31,7 +31,15 @@ check(not Context.normalize({ occurrence = base.occurrence,
 local capabilities = Context.capabilities()
 check(capabilities[1] == "automatic-trainer-second-slot"
   and capabilities[2] == "late-trainer-join-through-active-battle"
-  and capabilities[3] == "trainer-flee-policy",
+  and capabilities[3] == "trainer-flee-policy"
+  and capabilities[4] == "paired-opponent-party",
   "only implemented battle-context capabilities are advertised")
+local paired = assert(Context.normalize({ occurrence = base.occurrence,
+  definition = base.definition, requirements = {
+    opponentPolicy = "paired-rival", opponent = {
+      trainerClass = "RBY_SHARED_RIVAL1", partyIndex = 8,
+      owner = "ann", rival = "rby:rival-for:ann" } } }))
+check(paired.requirements.opponent.owner == "ann",
+  "a paired opponent recipe retains its canonical owner")
 
 print(("battle context policy: %d assertions passed"):format(passed))

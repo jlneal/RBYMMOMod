@@ -21,6 +21,7 @@ local need = ...
 local Config = need("Config")
 local Effects = need("BattleSim/Effects")
 local CampaignIdentity = need("CampaignIdentity")
+local BattleContext = need("BattleContext")
 
 local M = {}
 
@@ -1020,6 +1021,11 @@ function M.coopOffer(raw)
   local name = M.name(raw.name)
   local battle = M.battleKey(raw.battle)
   if not (from and name and battle) then return nil end
+  local context
+  if raw.context ~= nil then
+    context = BattleContext.normalize(raw.context)
+    if not context then return nil end
+  end
   return {
     from = from,
     name = name,
@@ -1027,6 +1033,7 @@ function M.coopOffer(raw)
     label = M.label(raw.label),
     map = M.mapId(raw.map),
     mode = M.coopOfferMode(raw.mode),
+    context = context,
   }
 end
 

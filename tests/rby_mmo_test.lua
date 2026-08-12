@@ -273,7 +273,7 @@ check(type(exports.battleContextCapabilities) == "function",
   "exports battle-context capabilities")
 local battleCaps = exports.battleContextCapabilities()
 eq(table.concat(battleCaps, ","),
-  "automatic-trainer-second-slot,late-trainer-join-through-active-battle,trainer-flee-policy",
+  "automatic-trainer-second-slot,late-trainer-join-through-active-battle,trainer-flee-policy,paired-opponent-party",
   "and advertises only the campaign trainer policies it executes")
 
 -- Vanilla must be untouched.  This mod adds multiplayer; it does not change
@@ -6600,7 +6600,22 @@ eq(ann.party:has(), true, "ANN and BOB are a party")
 ann.coop.battleContext = function()
   return { occurrence = "rby:route22:ann.1", definition = "0123456789abcdef",
     requirements = { joinPolicy = "automatic-second-slot",
-      enrollmentCutoff = "resolution", fleeAllowed = false } }
+      enrollmentCutoff = "resolution", fleeAllowed = false,
+      opponentPolicy = "paired-rival", opponent = {
+        trainerClass = "RBY_SHARED_RIVAL1", partyIndex = 7,
+        owner = "ann", rival = "rby:rival-for:ann" } } }
+end
+ann.client.worldState = { player = "ann", world = "shared-kanto",
+  compatibility = "campaign-v1" }
+bob.client.worldState = { player = "bob", world = "shared-kanto",
+  compatibility = "campaign-v1" }
+bob.coop.battleContext = function()
+  return { occurrence = "rby:route22:ann.1", definition = "0123456789abcdef",
+    requirements = { joinPolicy = "automatic-second-slot",
+      enrollmentCutoff = "resolution", fleeAllowed = false,
+      opponentPolicy = "paired-rival", opponent = {
+        trainerClass = "RBY_SHARED_RIVAL1", partyIndex = 8,
+        owner = "bob", rival = "rby:rival-for:bob" } } }
 end
 ann.chosen, bob.confirmBox = nil, nil
 eq(engage(ann), true,
@@ -6608,6 +6623,8 @@ eq(engage(ann), true,
 eq(ann.coop.waiting.mode, "campaign_trainer",
   "the standing offer is distinguished from ordinary trainer proximity")
 pump(bob)
+eq(engage(bob), true,
+  "the canonically enrolled second encounter supplies its own rival recipe")
 eq(bob.confirmBox, nil, "the second player is not shown a JOIN confirmation")
 eq(bob.coop:pendingOffer(), nil,
   "the declared offer is consumed automatically on the same map")
@@ -6615,14 +6632,17 @@ eq(bob.coop:pendingOffer(), nil,
 -- assertions exercise the unchanged ordinary prompt path from clean state.
 ann.coop:withdraw("alone")
 ann.coop.encounter, ann.coop.waiting = nil, nil
+bob.coop.encounter, bob.coop.waiting = nil, nil
 ann.coop.battleContext = nil
+bob.coop.battleContext = nil
 ann.client.coopOffer, bob.client.coopOffer = nil, nil
 ann.client.coopBattleId, ann.client.battleId = nil, nil
 bob.client.coopBattleId, bob.client.battleId = nil, nil
 hub.battles = {}
 hub.coopBattles = {}
 ann.peer.outbox, bob.peer.outbox = {}, {}
-ann.chosen, bob.confirmBox, bob.coop.offer = nil, nil, nil
+ann.chosen, bob.chosen, bob.confirmBox, bob.coop.offer = nil, nil, nil, nil
+ann.engine, bob.engine = nil, nil
 while ann.stack:top() do ann.stack:pop() end
 while bob.stack:top() do bob.stack:pop() end
 

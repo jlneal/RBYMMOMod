@@ -10,6 +10,7 @@ M.CAPABILITIES = {
   "automatic-trainer-second-slot",
   "late-trainer-join-through-active-battle",
   "trainer-flee-policy",
+  "paired-opponent-party",
 }
 
 local supported = {}
@@ -19,7 +20,7 @@ local function requirements(raw)
   if raw == nil then return nil end
   if type(raw) ~= "table" then return nil, "battle requirements are invalid" end
   local allowed = { joinPolicy = true, enrollmentCutoff = true,
-    fleeAllowed = true }
+    fleeAllowed = true, opponentPolicy = true, opponent = true }
   for key in pairs(raw) do
     if not allowed[key] then return nil, "battle requirement is unsupported" end
   end
@@ -45,6 +46,23 @@ local function requirements(raw)
     end
     out.fleeAllowed = raw.fleeAllowed
   end
+  if raw.opponentPolicy ~= nil or raw.opponent ~= nil then
+    local opponent = raw.opponent
+    if raw.opponentPolicy ~= "paired-rival" or type(opponent) ~= "table"
+      or type(opponent.trainerClass) ~= "string"
+      or not opponent.trainerClass:match("^[%w_%-]+$")
+      or #opponent.trainerClass > 40
+      or type(opponent.partyIndex) ~= "number" or opponent.partyIndex < 1
+      or opponent.partyIndex > 255 or opponent.partyIndex ~= math.floor(opponent.partyIndex)
+      or not Identity.identifier(opponent.owner, 64)
+      or not Identity.identifier(opponent.rival, 96) then
+      return nil, "paired trainer opponent is unsupported"
+    end
+    out.opponentPolicy = "paired-rival"
+    out.opponent = { trainerClass = opponent.trainerClass,
+      partyIndex = opponent.partyIndex, owner = opponent.owner,
+      rival = opponent.rival }
+  end
   return next(out) and out or nil
 end
 
@@ -69,6 +87,13 @@ function M.same(left, right)
   return a.joinPolicy == b.joinPolicy
     and a.enrollmentCutoff == b.enrollmentCutoff
     and a.fleeAllowed == b.fleeAllowed
+    and a.opponentPolicy == b.opponentPolicy
+    and ((a.opponent == nil and b.opponent == nil)
+      or (a.opponent and b.opponent
+        and a.opponent.trainerClass == b.opponent.trainerClass
+        and a.opponent.partyIndex == b.opponent.partyIndex
+        and a.opponent.owner == b.opponent.owner
+        and a.opponent.rival == b.opponent.rival))
 end
 
 function M.capabilities()

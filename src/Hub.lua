@@ -44,6 +44,7 @@ local Wire = need("Wire")
 local CampaignWire = need("CampaignWire")
 local CampaignAdmission = need("CampaignAdmission")
 local CampaignIdentity = need("CampaignIdentity")
+local BattleContext = need("BattleContext")
 local Sha256 = need("Sha256")
 local Rank = need("Rank")
 -- The turn machine, and the one thing in this file that is not pure routing.
@@ -1484,8 +1485,10 @@ function M:applyBattleAdmissions(record)
       for _, id in ipairs(record.memberIds) do if id == clientId then known = true end end
       if not known then
         record.memberIds[#record.memberIds + 1] = clientId
-        record.sides.a[#record.sides.a + 1] = clientId
       end
+      local onSide = false
+      for _, id in ipairs(record.sides.a) do if id == clientId then onSide = true end end
+      if not onSide then record.sides.a[#record.sides.a + 1] = clientId end
       local client = self.clients[clientId]
       if client then client.battleId = record.id; client.coopBattleId = record.id end
       local group = self.coopBattles[record.id]
@@ -1500,6 +1503,21 @@ function M:applyBattleAdmissions(record)
     end
   end
   return false
+end
+
+function M:queueCampaignOpponent(record, client, party)
+  if not (record and record.mode == "campaign_npc" and record.sim
+    and client and party and party.side == "b") then return false end
+  self:ensureCampaignNpcSeats(record, #record.memberIds)
+  local seat = self:battleSeat(record, client, party)
+  if not seat then return false end
+  record.parties[seat] = party
+  local fighter = self:battleFighter(record, seat)
+  if not fighter or not record.sim:admit("b", fighter) then return false end
+  self:announceBattleSeat(record, seat)
+  self:broadcastBattle(record, Wire.BATTLE_READY,
+    self:battleReadyPayload(record))
+  return true
 end
 
 function M:decideSecondWild(record, entrantId)
@@ -1650,7 +1668,12 @@ function M:battleSeat(record, client, party)
     if memberId == client.id then member = true break end
   end
   if not member then return nil end
-  if (record.mode == "coop_npc" or record.mode == "campaign_npc")
+  if record.mode == "campaign_npc" and party.side == "b" and record.npcIds then
+    for index, memberId in ipairs(record.memberIds) do
+      if memberId == client.id then return record.npcIds[index] end
+    end
+  end
+  if record.mode == "coop_npc"
      and party.side == "b"
      and client.id == record.hostId and record.npcIds then
     return record.npcIds[1]
@@ -1684,6 +1707,11 @@ function M:fillBattleParty(record, client, party)
     -- never reaches this branch, so their own bag is not wiped by that upload.
     record.bags = record.bags or {}
     record.bags[client.id] = self:bagMap(party.bag)
+    return true
+  end
+  if record.mode == "campaign_npc" then
+    record.parties[seat] = { battle = party.battle, side = party.side,
+      badges = party.badges, mons = party.mons }
     return true
   end
 
@@ -3050,6 +3078,12 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
   -- eligible second seat. Absent keeps the trainer WAIT/JOIN invite path.
   local mode = Wire.coopOfferMode(msg.mode)
   if mode == "coop_wild" and not self.wildCoopEnabled then return end
+  local context = mode == "campaign_trainer" and BattleContext.normalize(msg.context) or nil
+  if mode == "campaign_trainer" then
+    local actor = client.worldState and client.worldState.player
+    local opponent = context and context.requirements and context.requirements.opponent
+    if not (context and opponent and opponent.owner == actor) then return end
+  end
   local label = Wire.label(msg.label)
   local map = Wire.mapId(msg.map)
   client.coopOffer = {
@@ -3057,6 +3091,7 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
     label = label,
     map = map,
     mode = mode,
+    context = context,
     -- Stamped so the sweep can expire it on the same clock the partner's
     -- client already uses; without one the two ends disagreed about whether
     -- the fight was still joinable.
@@ -3091,6 +3126,7 @@ handlers[Wire.COOP_WAIT] = function(self, client, msg)
     map = client.coopOffer.map,
   }
   if mode then offer.mode = mode end
+  if context then offer.context = context end
   if mode ~= "coop_wild" or self.offMapJoinEnabled
       or (map ~= nil and partner.map == map) then
     send(partner, Wire.COOP_OFFER, offer)
@@ -3140,6 +3176,18 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
   end
   if offer.mode == "coop_wild" and not self.wildCoopEnabled then return end
 
+  local joinContext
+  if offer.mode == "campaign_trainer" then
+    joinContext = BattleContext.normalize(msg.context)
+    local actor = client.worldState and client.worldState.player
+    local opponent = joinContext and joinContext.requirements
+      and joinContext.requirements.opponent
+    if not (joinContext and BattleContext.same(
+      { occurrence = offer.context.occurrence, definition = offer.context.definition },
+      { occurrence = joinContext.occurrence, definition = joinContext.definition })
+      and opponent and opponent.owner == actor) then return end
+  end
+
   if (offer.mode == "coop_wild" or offer.mode == "campaign_trainer")
       and offer.plan then
     local record = self.battles[offer.plan]
@@ -3159,6 +3207,12 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
       send(client, Wire.COOP_OFFER_END, { reason = "alone" })
       return
     end
+    if offer.mode == "campaign_trainer" and record.sim then
+      local known = false
+      for _, id in ipairs(record.memberIds) do if id == client.id then known = true end end
+      if not known then record.memberIds[#record.memberIds + 1] = client.id end
+      self:ensureCampaignNpcSeats(record, #record.memberIds)
+    end
     host.coopOffer = nil
     client.coopOffer = nil
     client.coopBattleId = record.id
@@ -3168,10 +3222,12 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
       members[#members + 1] = { id = member.id, name = member.name }
     end
     send(host, Wire.COOP_JOINED,
-      { id = client.id, name = client.name, plan = record.id, late = true })
+      { id = client.id, name = client.name, plan = record.id, late = true,
+        opponent = joinContext and joinContext.requirements.opponent })
     send(client, Wire.COOP_BATTLE, {
       id = record.id, side = "a", allies = members, battle = battle,
       host = host.id, mode = record.mode, late = true,
+      context = joinContext,
     })
     return
   end
@@ -3446,8 +3502,13 @@ handlers[Wire.BATTLE_PARTY] = function(self, client, msg)
 
   if record.sim then
     if (record.mode ~= "coop_wild" and record.mode ~= "campaign_npc")
-      or party.side ~= "a"
-       or not record.eligibleIds[client.id] then return end
+      or (party.side ~= "a" and not (record.mode == "campaign_npc" and party.side == "b"))
+      or not record.eligibleIds[client.id] then return end
+    if party.side == "b" then
+      self:queueCampaignOpponent(record, client, party)
+      self:flushBattle(record)
+      return
+    end
     if not self:sendBattleCatchup(record, client) then return end
     self:queueBattleAdmission(record, client, party)
     self:flushBattle(record)

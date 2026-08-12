@@ -787,6 +787,11 @@ do
     mons = { mon({ species = "ALLY", hp = 999 }) } }),
     "a second player joins the live trainer battle at its clean boundary")
   eq(record.sides.a[2], bob.id, "the late trainer ally occupies the second seat")
+  hub:ensureCampaignNpcSeats(record, 2)
+  ok(hub:queueCampaignOpponent(record, bob, { battle = record.id, side = "b",
+    mons = { mon({ species = "BOBS_RIVAL", hp = 999 }) } }),
+    "the joining player's paired rival occupies the second opponent seat")
+  eq(#record.sim.bySide.b, 2, "the live referee expands to a true 2x2")
   record.fleeAllowed = false
   hub:receive(ann, { type = Wire.BATTLE_CHOICE, battle = record.id,
     action = "run" })

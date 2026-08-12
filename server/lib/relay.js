@@ -41,7 +41,7 @@ const {
   cleanProfile, cleanOutcome, cleanPoints, cleanPlayerId, cleanConvoy,
   payloadOk, FACINGS,
   KINDS, SCOPES, NAME_MAX, MESSAGE_MAX, MOTD_MAX, LOCAL_RADIUS,
-  cleanBattleKey, cleanCoopReason, cleanCoopOfferMode, cleanLabel, cleanPartyEvent, PARTY_MAX,
+  cleanBattleKey, cleanBattleContext, cleanCoopReason, cleanCoopOfferMode, cleanLabel, cleanPartyEvent, PARTY_MAX,
   cleanBattleRuleset, cleanBattleParty, cleanBattleChoice, cleanBattleReconnect,
   cleanBattleMon, BATTLE_MOVE_MAX, BATTLE_MON_MAX,
   cleanFieldSnapshot,
@@ -954,9 +954,16 @@ handlers['mmo.coop_wait'] = (relay, client, msg) => {
   // Flexible modes begin immediately and retain one eligible live seat.
   const mode = cleanCoopOfferMode(msg.mode);
   if (mode === 'coop_wild' && !relay.wildCoopEnabled) return;
+  const context = mode === 'campaign_trainer' ? cleanBattleContext(msg.context) : null;
+  if (mode === 'campaign_trainer') {
+    const actor = client.worldState && client.worldState.player;
+    const opponent = context && context.requirements.opponent;
+    if (!context || !opponent || opponent.owner !== actor) return;
+  }
   // startedAt so the sweep can expire it on the same clock the partner's
   // client already uses. Mirrors src/Hub.lua.
-  client.coopOffer = { battle, label, map, mode, startedAt: relay.now() };
+  client.coopOffer = { battle, label, map, mode, context,
+    startedAt: relay.now() };
   if (mode === 'coop_wild' || mode === 'campaign_trainer') {
     const battleId = `c${relay.nextCoopAsk++}`;
     client.coopOffer.plan = battleId;
@@ -975,6 +982,7 @@ handlers['mmo.coop_wait'] = (relay, client, msg) => {
   }
   const offer = { from: client.id, name: client.name, battle, label, map };
   if (mode) offer.mode = mode;
+  if (context) offer.context = context;
   if (mode !== 'coop_wild' || relay.offMapJoinEnabled
       || (map !== null && partner.map === map)) {
     relay.send(partner, 'mmo.coop_offer', offer);
@@ -1024,6 +1032,16 @@ handlers['mmo.coop_join'] = (relay, client, msg) => {
     return;
   }
   if (offer.mode === 'coop_wild' && !relay.wildCoopEnabled) return;
+  let joinContext = null;
+  if (offer.mode === 'campaign_trainer') {
+    joinContext = cleanBattleContext(msg.context);
+    const actor = client.worldState && client.worldState.player;
+    const opponent = joinContext && joinContext.requirements.opponent;
+    if (!joinContext || !offer.context
+        || joinContext.occurrence !== offer.context.occurrence
+        || joinContext.definition !== offer.context.definition
+        || !opponent || opponent.owner !== actor) return;
+  }
 
   if ((offer.mode === 'coop_wild' || offer.mode === 'campaign_trainer')
       && offer.plan) {
@@ -1044,6 +1062,10 @@ handlers['mmo.coop_join'] = (relay, client, msg) => {
       relay.send(client, 'mmo.coop_offer_end', { reason: 'alone' });
       return;
     }
+    if (offer.mode === 'campaign_trainer' && record.sim) {
+      if (!record.memberIds.includes(client.id)) record.memberIds.push(client.id);
+      relay.ensureCampaignNpcSeats(record, record.memberIds.length);
+    }
     host.coopOffer = null;
     client.coopOffer = null;
     client.coopBattleId = record.id;
@@ -1052,10 +1074,12 @@ handlers['mmo.coop_join'] = (relay, client, msg) => {
       .map((m) => ({ id: m.id, name: m.name }));
     relay.send(host, 'mmo.coop_joined', {
       id: client.id, name: client.name, plan: record.id, late: true,
+      opponent: joinContext && joinContext.requirements.opponent,
     });
     relay.send(client, 'mmo.coop_battle', {
       id: record.id, side: 'a', allies: liveMembers, battle,
       host: host.id, mode: record.mode, late: true,
+      context: joinContext,
     });
     return;
   }
@@ -1338,8 +1362,14 @@ handlers['mmo.battle_party'] = (relay, client, msg) => {
 
   if (record.sim) {
     if ((record.mode !== 'coop_wild' && record.mode !== 'campaign_npc')
-        || party.side !== 'a'
+        || (party.side !== 'a'
+          && !(record.mode === 'campaign_npc' && party.side === 'b'))
         || !record.eligibleIds.has(client.id)) return;
+    if (party.side === 'b') {
+      relay.queueCampaignOpponent(record, client, party);
+      relay.flushBattle(record);
+      return;
+    }
     if (!relay.sendBattleCatchup(record, client)) return;
     relay.queueBattleAdmission(record, client, party);
     relay.flushBattle(record);
@@ -2909,7 +2939,7 @@ class Relay {
       if (fighter) this.announceBattleSeat(record, clientId);
       if (fighter && record.sim.admit('a', fighter)) {
         record.pendingAdmissions.delete(clientId);
-        if (!record.memberIds.includes(clientId)) record.memberIds.push(clientId);
+      if (!record.memberIds.includes(clientId)) record.memberIds.push(clientId);
         if (!record.sides.a.includes(clientId)) record.sides.a.push(clientId);
         const client = this.clients.get(clientId);
         if (client) {
@@ -2923,6 +2953,20 @@ class Relay {
       }
     }
     return false;
+  }
+
+  queueCampaignOpponent(record, client, party) {
+    if (!record || record.mode !== 'campaign_npc' || !record.sim
+        || !client || !party || party.side !== 'b') return false;
+    this.ensureCampaignNpcSeats(record, record.memberIds.length);
+    const seat = this.battleSeat(record, client, party);
+    if (!seat) return false;
+    record.parties.set(seat, party);
+    const fighter = this.battleFighter(record, seat);
+    if (!fighter || !record.sim.admit('b', fighter)) return false;
+    this.announceBattleSeat(record, seat);
+    this.broadcastBattle(record, 'mmo.battle_ready', this.battleReadyPayload(record));
+    return true;
   }
 
   decideSecondWild(record, entrantId) {
@@ -3050,7 +3094,10 @@ class Relay {
    */
   battleSeat(record, client, party) {
     if (!record.memberIds.includes(client.id)) return null;
-    if ((record.mode === 'coop_npc' || record.mode === 'campaign_npc')
+    if (record.mode === 'campaign_npc' && party.side === 'b' && record.npcIds) {
+      return record.npcIds[record.memberIds.indexOf(client.id)];
+    }
+    if (record.mode === 'coop_npc'
         && party.side === 'b'
         && client.id === record.hostId && record.npcIds) {
       return record.npcIds[0];
@@ -3086,6 +3133,13 @@ class Relay {
       // never reaches this branch, so their own bag is not wiped by that upload.
       if (!record.bags) record.bags = new Map();
       record.bags.set(client.id, this.bagMap(party.bag));
+      return true;
+    }
+    if (record.mode === 'campaign_npc') {
+      record.parties.set(seat, {
+        battle: party.battle, side: party.side, badges: party.badges,
+        mons: party.mons,
+      });
       return true;
     }
 

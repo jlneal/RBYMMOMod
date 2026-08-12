@@ -397,6 +397,7 @@ function M.new(game, opts)
     partyIndex = opts.partyIndex or opts.trainerPartyIndex,
     campaignOccurrence = opts.campaignOccurrence,
     campaignDefinition = opts.campaignDefinition,
+    opponent = opts.opponent,
     fleeAllowed = opts.fleeAllowed ~= false,
     trainerPic = opts.trainerPic,
     endBattleText = opts.endBattleText,
@@ -5380,7 +5381,17 @@ function M:uploadMediated()
   -- side-"b" party from the host of a coop_npc onto the synthetic npc seat
   -- rather than displacing the host's own, which is why this can be a second
   -- mmo.battle_party on the same connection.
-  if self.host and (self.mode == "coop_npc" or self.mode == "campaign_npc") then
+  if self.mode == "campaign_npc" and type(self.opponent) == "table" then
+    local party = M.trainerParty(self.game, self.opponent.trainerClass,
+      self.opponent.partyIndex)
+    local npc = party and Mediated.snapshotMons(self.game, party) or nil
+    if npc and #npc > 0 then
+      Mediated.sendParty(self.transport, self.battleId, npc, "b")
+    else
+      mod.log:warn("the paired campaign opponent could not be constructed")
+      self.medFailed = true
+    end
+  elseif self.host and self.mode == "coop_npc" then
     local npc = self:npcMons()
     if npc and #npc > 0 then
       Mediated.sendParty(self.transport, self.battleId, npc, "b")

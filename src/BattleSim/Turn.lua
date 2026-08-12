@@ -805,7 +805,9 @@ end
 -- vacated seat. Rejoining deliberately retains the old in-battle party sheet:
 -- accepting a fresh upload would make leaving a heal and party-swap exploit.
 function Battle:admit(side, entry)
-  if not self:canChangeSeats() or side ~= "a" or type(entry) ~= "table" then
+  if not self:canChangeSeats()
+    or (side ~= "a" and not (self.mode == "campaign_npc" and side == "b"))
+    or type(entry) ~= "table" then
     return false
   end
   local playerId = str(entry.playerId)

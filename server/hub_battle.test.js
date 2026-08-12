@@ -452,6 +452,12 @@ function testCampaignTrainerAdmission() {
   }), 'a second player joins the live trainer battle at its clean boundary');
   ok(record.sides.a[1] === b.id,
     'the late trainer ally occupies the second seat');
+  relay.ensureCampaignNpcSeats(record, 2);
+  ok(relay.queueCampaignOpponent(record, relay.get(b.id), {
+    battle: record.id, side: 'b', mons: [mon(4, 999)], bag: [],
+  }), "the joining player's paired rival occupies the second opponent seat");
+  ok(record.sim.bySide.b.length === 2,
+    'the live referee expands to a true 2x2');
   record.fleeAllowed = false;
   relay.handle(a.id, {
     type: 'mmo.battle_choice', battle: record.id, action: 'run',

@@ -761,7 +761,9 @@ class Battle {
   // Add the second human, or restore the same retained in-battle seat after a
   // voluntary run. A rejoin never accepts a fresh (possibly healed) party.
   admit(side, entry) {
-    if (!this.canChangeSeats() || side !== 'a' || !isTable(entry)) return false;
+    if (!this.canChangeSeats()
+        || (side !== 'a' && !(this.mode === 'campaign_npc' && side === 'b'))
+        || !isTable(entry)) return false;
     const playerId = str(entry.playerId);
     if (!playerId) return false;
 
