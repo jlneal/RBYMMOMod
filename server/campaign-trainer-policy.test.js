@@ -23,3 +23,14 @@ test('paired opponent recipes are bounded and owner-bearing', () => {
   assert.equal(cleanBattleContext({ occurrence: 'rby:route22:1',
     definition: '0123456789abcdef', requirements: {} }), null);
 });
+
+test('a completed helper names the existing opponent without inventing one', () => {
+  const context = cleanBattleContext({ occurrence: 'rby:route22:1',
+    definition: '0123456789abcdef', requirements: {
+      joinPolicy: 'automatic-second-slot', enrollmentCutoff: 'resolution',
+      fleeAllowed: false, opponentPolicy: 'existing-second-party-member',
+    } });
+  assert.equal(context.requirements.opponentPolicy,
+    'existing-second-party-member');
+  assert.equal(context.requirements.opponent, undefined);
+});

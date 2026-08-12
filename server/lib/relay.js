@@ -1036,11 +1036,19 @@ handlers['mmo.coop_join'] = (relay, client, msg) => {
   if (offer.mode === 'campaign_trainer') {
     joinContext = cleanBattleContext(msg.context);
     const actor = client.worldState && client.worldState.player;
-    const opponent = joinContext && joinContext.requirements.opponent;
+    const requirements = joinContext && joinContext.requirements;
+    const opponent = requirements && requirements.opponent;
+    const helper = requirements
+      && requirements.opponentPolicy === 'existing-second-party-member';
     if (!joinContext || !offer.context
         || joinContext.occurrence !== offer.context.occurrence
         || joinContext.definition !== offer.context.definition
-        || !opponent || opponent.owner !== actor) return;
+        || !((opponent && opponent.owner === actor) || helper)) return;
+    const planned = offer.plan && relay.battles.get(offer.plan);
+    if (planned) {
+      if (!planned.campaignClaims) planned.campaignClaims = new Map();
+      planned.campaignClaims.set(client.id, helper ? 'completed-helper' : 'owner');
+    }
   }
 
   if ((offer.mode === 'coop_wild' || offer.mode === 'campaign_trainer')
@@ -1057,14 +1065,18 @@ handlers['mmo.coop_join'] = (relay, client, msg) => {
       }
       record.memberIds.push(client.id);
       record.sides.a.push(client.id);
-      relay.ensureCampaignNpcSeats(record, record.memberIds.length);
+      const helper = record.campaignClaims
+        && record.campaignClaims.get(client.id) === 'completed-helper';
+      if (!helper) relay.ensureCampaignNpcSeats(record, record.memberIds.length);
     } else if (!record.sim) {
       relay.send(client, 'mmo.coop_offer_end', { reason: 'alone' });
       return;
     }
     if (offer.mode === 'campaign_trainer' && record.sim) {
       if (!record.memberIds.includes(client.id)) record.memberIds.push(client.id);
-      relay.ensureCampaignNpcSeats(record, record.memberIds.length);
+      const helper = record.campaignClaims
+        && record.campaignClaims.get(client.id) === 'completed-helper';
+      if (!helper) relay.ensureCampaignNpcSeats(record, record.memberIds.length);
     }
     host.coopOffer = null;
     client.coopOffer = null;
@@ -2930,6 +2942,30 @@ class Relay {
     return this.applyBattleAdmissions(record);
   }
 
+  // A completed participant is a helper, not the owner of another rival.
+  // Promote the canonical rival's next living reserve into the open seat.
+  expandCampaignHelper(record, clientId) {
+    if (!record || record.mode !== 'campaign_npc' || !record.sim
+        || !record.campaignClaims
+        || record.campaignClaims.get(clientId) !== 'completed-helper') return false;
+    if (record.sim.bySide.b.length >= COOP_SIDE) return true;
+
+    const index = record.npcIds.length;
+    const npcId = `n${record.id}${String.fromCharCode(97 + index)}`;
+    if (!record.sim.splitCampaignOpponent({
+      playerId: npcId, name: 'TRAINER', mons: [],
+    })) return false;
+
+    record.npcIds.push(npcId);
+    record.sides.b.push(npcId);
+    const fighter = record.sim.byId.get(npcId);
+    record.parties.set(npcId, {
+      battle: record.id, side: 'b', mons: fighter ? fighter.mons : [],
+    });
+    this.announceBattleSeat(record, npcId);
+    return true;
+  }
+
   applyBattleAdmissions(record) {
     if (!record || !record.sim || !record.sim.canChangeSeats()) return false;
     const ids = Array.from(record.pendingAdmissions || []).sort();
@@ -2948,6 +2984,7 @@ class Relay {
         }
         const group = this.coopBattles.get(record.id);
         if (group && !group.members.includes(clientId)) group.members.push(clientId);
+        this.expandCampaignHelper(record, clientId);
         this.broadcastBattle(record, 'mmo.battle_ready', this.battleReadyPayload(record));
         return true;
       }
@@ -3307,6 +3344,9 @@ class Relay {
       return false;
     }
     record.sim = created.battle;
+    for (const clientId of record.memberIds) {
+      this.expandCampaignHelper(record, clientId);
+    }
 
     /*
      * The npc seats are advertised under their own ids, not hidden behind the

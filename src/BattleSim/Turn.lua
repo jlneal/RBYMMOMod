@@ -866,6 +866,27 @@ function Battle:admit(side, entry)
   return true
 end
 
+function Battle:splitCampaignOpponent(entry)
+  if self.mode ~= "campaign_npc" or not self:canChangeSeats()
+    or type(entry) ~= "table" or #self.bySide.b ~= 1 then return false end
+  local source = self.bySide.b[1]
+  local active = activeMon(source)
+  local selected
+  for index, mon in ipairs(source.mons) do
+    if mon ~= active and mon.hp > 0 then selected = index; break end
+  end
+  if not selected then return false end
+  local mon = table.remove(source.mons, selected)
+  if selected < source.active then source.active = source.active - 1 end
+  local candidate = {}
+  for key, value in pairs(entry) do candidate[key] = value end
+  candidate.mons = { mon }
+  if self:admit("b", candidate) then return true end
+  table.insert(source.mons, selected, mon)
+  if selected <= source.active then source.active = source.active + 1 end
+  return false
+end
+
 function Battle:admitWild(entry)
   if not self:canChangeSeats() or self.mode ~= "coop_wild"
       or type(entry) ~= "table" or #self.bySide.b >= 2 then return false end

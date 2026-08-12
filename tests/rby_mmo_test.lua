@@ -273,7 +273,7 @@ check(type(exports.battleContextCapabilities) == "function",
   "exports battle-context capabilities")
 local battleCaps = exports.battleContextCapabilities()
 eq(table.concat(battleCaps, ","),
-  "automatic-trainer-second-slot,late-trainer-join-through-active-battle,trainer-flee-policy,paired-opponent-party",
+  "automatic-trainer-second-slot,late-trainer-join-through-active-battle,trainer-flee-policy,paired-opponent-party,completed-helper-existing-opponent",
   "and advertises only the campaign trainer policies it executes")
 
 -- Vanilla must be untouched.  This mod adds multiplayer; it does not change

@@ -353,14 +353,17 @@ function cleanBattleContext(value) {
   const owner = opponent && cleanProgressionId(opponent.owner, 64);
   const rival = opponent && cleanProgressionId(opponent.rival, 96);
   if (raw.joinPolicy !== 'automatic-second-slot'
-      || raw.enrollmentCutoff !== 'resolution' || raw.fleeAllowed !== false
-      || raw.opponentPolicy !== 'paired-rival' || !partyIndex
-      || !trainerClass || !owner || !rival) return null;
-  return { occurrence, definition, requirements: {
+      || raw.enrollmentCutoff !== 'resolution' || raw.fleeAllowed !== false) return null;
+  const helper = raw.opponentPolicy === 'existing-second-party-member'
+    && opponent === undefined;
+  if (!helper && (raw.opponentPolicy !== 'paired-rival' || !partyIndex
+      || !trainerClass || !owner || !rival)) return null;
+  const requirements = {
     joinPolicy: raw.joinPolicy, enrollmentCutoff: raw.enrollmentCutoff,
     fleeAllowed: false, opponentPolicy: raw.opponentPolicy,
-    opponent: { trainerClass, partyIndex, owner, rival },
-  } };
+  };
+  if (!helper) requirements.opponent = { trainerClass, partyIndex, owner, rival };
+  return { occurrence, definition, requirements };
 }
 
 // Which side of a co-op battle somebody is on, and why an offer or an ask

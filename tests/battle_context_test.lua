@@ -32,7 +32,8 @@ local capabilities = Context.capabilities()
 check(capabilities[1] == "automatic-trainer-second-slot"
   and capabilities[2] == "late-trainer-join-through-active-battle"
   and capabilities[3] == "trainer-flee-policy"
-  and capabilities[4] == "paired-opponent-party",
+  and capabilities[4] == "paired-opponent-party"
+  and capabilities[5] == "completed-helper-existing-opponent",
   "only implemented battle-context capabilities are advertised")
 local paired = assert(Context.normalize({ occurrence = base.occurrence,
   definition = base.definition, requirements = {

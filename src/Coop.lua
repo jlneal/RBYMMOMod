@@ -1167,6 +1167,20 @@ function M:joinFromMenu(game)
   return self:askToJoin(game, offer)
 end
 
+function M:joinCampaignTrainer(context)
+  local offer = self.offer
+  local normalized = BattleContext.normalize(context)
+  if not (offer and offer.mode == "campaign_trainer" and normalized
+    and offer.context and offer.context.occurrence == normalized.occurrence
+    and offer.context.definition == normalized.definition
+    and self.transport:isReady() and not self.running) then return false end
+  self.offer = nil
+  self.transport:send(Wire.COOP_JOIN, {
+    to = offer.from, battle = offer.battle, context = normalized,
+  })
+  return true
+end
+
 -- ------- against another party
 
 -- PARTY BATTLE, and the three ways it is refused before anything is sent.
@@ -1997,7 +2011,9 @@ function M:npcSide(game, plan)
 
   local left, right = {}, {}
   for i, mon in ipairs(party) do
-    local into = (i % 2 == 1) and left or right
+    -- A campaign rival begins as one canonical combatant. Its reserve is only
+    -- promoted into the second field seat if a completed player joins to help.
+    local into = (plan.mode == "campaign_npc" or i % 2 == 1) and left or right
     into[#into + 1] = mon
   end
   local label = plan.label or "TRAINER"

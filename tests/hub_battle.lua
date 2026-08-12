@@ -801,6 +801,33 @@ end
 
 do
   local hub = Hub.new({ maxPlayers = 4 })
+  local ann = join(hub, "HELPHOST")
+  local bob = join(hub, "HELPDONE")
+  local record = hub:openMediatedBattle("campaign-helper", {
+    mode = "campaign_npc", hostId = ann.id, memberIds = { ann.id },
+    eligibleIds = { ann.id, bob.id },
+  })
+  hub:fillBattleParty(record, ann, { battle = record.id, side = "a",
+    mons = { mon({ species = "OWNER", hp = 999 }) } })
+  hub:fillBattleParty(record, ann, { battle = record.id, side = "b",
+    mons = { mon({ species = "LEAD", hp = 999 }),
+      mon({ species = "RESERVE", hp = 999 }) } })
+  record.ruleset = { chart = CHART }
+  ok(hub:tryStartSim(record), "a helper-eligible campaign battle starts 1x1")
+  record.campaignClaims = { [bob.id] = "completed-helper" }
+  ok(hub:queueBattleAdmission(record, bob, { battle = record.id, side = "a",
+    mons = { mon({ species = "HELPER", hp = 999 }) } }),
+    "a completed player enters as a helper")
+  eq(#record.sim.bySide.b, 2,
+    "the canonical rival promotes its living reserve into the second seat")
+  eq(record.sim.bySide.b[2].mons[1].species, "RESERVE",
+    "the promoted seat owns the rival's reserve rather than a duplicate rival")
+  eq(#record.sim.bySide.b[1].mons, 1,
+    "the promoted monster is removed from the original rival fighter")
+end
+
+do
+  local hub = Hub.new({ maxPlayers = 4 })
   local ann = join(hub, "ANN")
   local bob = join(hub, "BOB")
 

@@ -2765,6 +2765,9 @@ function M.install()
   mod.exports.battleContextCapabilities = function()
     return BattleContext.capabilities()
   end
+  mod.exports.joinCampaignTrainer = function(context)
+    return coop:joinCampaignTrainer(context)
+  end
   mod.exports.unregisterBattleContextProvider = function(id)
     id = CampaignIdentity.identifier(id, 32)
     if not id or not battleContextProviders[id] then return false end

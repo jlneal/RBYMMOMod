@@ -11,6 +11,7 @@ M.CAPABILITIES = {
   "late-trainer-join-through-active-battle",
   "trainer-flee-policy",
   "paired-opponent-party",
+  "completed-helper-existing-opponent",
 }
 
 local supported = {}
@@ -48,7 +49,10 @@ local function requirements(raw)
   end
   if raw.opponentPolicy ~= nil or raw.opponent ~= nil then
     local opponent = raw.opponent
-    if raw.opponentPolicy ~= "paired-rival" or type(opponent) ~= "table"
+    if raw.opponentPolicy == "existing-second-party-member" and opponent == nil
+      and supported["completed-helper-existing-opponent"] then
+      out.opponentPolicy = raw.opponentPolicy
+    elseif raw.opponentPolicy ~= "paired-rival" or type(opponent) ~= "table"
       or type(opponent.trainerClass) ~= "string"
       or not opponent.trainerClass:match("^[%w_%-]+$")
       or #opponent.trainerClass > 40
@@ -57,11 +61,12 @@ local function requirements(raw)
       or not Identity.identifier(opponent.owner, 64)
       or not Identity.identifier(opponent.rival, 96) then
       return nil, "paired trainer opponent is unsupported"
+    else
+      out.opponentPolicy = "paired-rival"
+      out.opponent = { trainerClass = opponent.trainerClass,
+        partyIndex = opponent.partyIndex, owner = opponent.owner,
+        rival = opponent.rival }
     end
-    out.opponentPolicy = "paired-rival"
-    out.opponent = { trainerClass = opponent.trainerClass,
-      partyIndex = opponent.partyIndex, owner = opponent.owner,
-      rival = opponent.rival }
   end
   return next(out) and out or nil
 end

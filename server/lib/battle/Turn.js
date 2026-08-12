@@ -829,6 +829,21 @@ class Battle {
     return true;
   }
 
+  splitCampaignOpponent(entry) {
+    if (this.mode !== 'campaign_npc' || !this.canChangeSeats()
+        || !isTable(entry) || this.bySide.b.length !== 1) return false;
+    const source = this.bySide.b[0];
+    const active = activeMon(source);
+    const selected = source.mons.findIndex((mon) => mon !== active && mon.hp > 0);
+    if (selected < 0) return false;
+    const [mon] = source.mons.splice(selected, 1);
+    if (selected < source.active) source.active -= 1;
+    if (this.admit('b', Object.assign({}, entry, { mons: [mon] }))) return true;
+    source.mons.splice(selected, 0, mon);
+    if (selected <= source.active) source.active += 1;
+    return false;
+  }
+
   admitWild(entry) {
     if (!this.canChangeSeats() || this.mode !== 'coop_wild'
         || !isTable(entry) || this.bySide.b.length >= 2) return false;

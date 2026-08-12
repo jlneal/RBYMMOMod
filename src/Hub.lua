@@ -1470,6 +1470,31 @@ function M:queueBattleAdmission(record, client, party)
   return self:applyBattleAdmissions(record)
 end
 
+-- A player who already resolved this occurrence may still help, but they do
+-- not own another rival. If the canonical rival has a living reserve, move
+-- its next monster into the vacant field seat instead.
+function M:expandCampaignHelper(record, clientId)
+  if not (record and record.mode == "campaign_npc" and record.sim
+      and record.campaignClaims
+      and record.campaignClaims[clientId] == "completed-helper") then return false end
+  if #record.sim.bySide.b >= Config.COOP_SIDE then return true end
+
+  local index = #record.npcIds + 1
+  local npcId = "n" .. tostring(record.id) .. string.char(96 + index)
+  if not record.sim:splitCampaignOpponent({
+    playerId = npcId, name = "TRAINER", mons = {},
+  }) then return false end
+
+  record.npcIds[index] = npcId
+  record.sides.b[index] = npcId
+  local fighter = record.sim.byId[npcId]
+  record.parties[npcId] = {
+    battle = record.id, side = "b", mons = fighter and fighter.mons or {},
+  }
+  self:announceBattleSeat(record, npcId)
+  return true
+end
+
 function M:applyBattleAdmissions(record)
   if not (record and record.sim and record.sim:canChangeSeats()) then return false end
   local ids = {}
@@ -1497,6 +1522,7 @@ function M:applyBattleAdmissions(record)
         for _, id in ipairs(group.members) do if id == clientId then inGroup = true end end
         if not inGroup then group.members[#group.members + 1] = clientId end
       end
+      self:expandCampaignHelper(record, clientId)
       self:broadcastBattle(record, Wire.BATTLE_READY,
         self:battleReadyPayload(record))
       return true
@@ -1892,6 +1918,9 @@ function M:tryStartSim(record)
     return false
   end
   record.sim = battle
+  for _, clientId in ipairs(record.memberIds) do
+    self:expandCampaignHelper(record, clientId)
+  end
 
   -- The npc seats are advertised under their own ids, not hidden behind the
   -- host's.
@@ -3180,12 +3209,19 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
   if offer.mode == "campaign_trainer" then
     joinContext = BattleContext.normalize(msg.context)
     local actor = client.worldState and client.worldState.player
-    local opponent = joinContext and joinContext.requirements
-      and joinContext.requirements.opponent
+    local requirements = joinContext and joinContext.requirements
+    local opponent = requirements and requirements.opponent
+    local helper = requirements
+      and requirements.opponentPolicy == "existing-second-party-member"
     if not (joinContext and BattleContext.same(
       { occurrence = offer.context.occurrence, definition = offer.context.definition },
       { occurrence = joinContext.occurrence, definition = joinContext.definition })
-      and opponent and opponent.owner == actor) then return end
+      and ((opponent and opponent.owner == actor) or helper)) then return end
+    local planned = offer.plan and self.battles[offer.plan] or nil
+    if planned then
+      planned.campaignClaims = planned.campaignClaims or {}
+      planned.campaignClaims[client.id] = helper and "completed-helper" or "owner"
+    end
   end
 
   if (offer.mode == "coop_wild" or offer.mode == "campaign_trainer")
@@ -3202,7 +3238,9 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
       end
       record.memberIds[#record.memberIds + 1] = client.id
       record.sides.a[#record.sides.a + 1] = client.id
-      self:ensureCampaignNpcSeats(record, #record.memberIds)
+      local helper = record.campaignClaims
+        and record.campaignClaims[client.id] == "completed-helper"
+      if not helper then self:ensureCampaignNpcSeats(record, #record.memberIds) end
     elseif not record.sim then
       send(client, Wire.COOP_OFFER_END, { reason = "alone" })
       return
@@ -3211,7 +3249,9 @@ handlers[Wire.COOP_JOIN] = function(self, client, msg)
       local known = false
       for _, id in ipairs(record.memberIds) do if id == client.id then known = true end end
       if not known then record.memberIds[#record.memberIds + 1] = client.id end
-      self:ensureCampaignNpcSeats(record, #record.memberIds)
+      local helper = record.campaignClaims
+        and record.campaignClaims[client.id] == "completed-helper"
+      if not helper then self:ensureCampaignNpcSeats(record, #record.memberIds) end
     end
     host.coopOffer = nil
     client.coopOffer = nil

@@ -466,6 +466,34 @@ function testCampaignTrainerAdmission() {
     'the hub rejects fleeing when canonical trainer content forbids it');
 }
 
+function testCampaignCompletedHelper() {
+  const relay = makeRelay(makeClock());
+  const a = dial(relay, 'HELPHOST');
+  const b = dial(relay, 'HELPDONE');
+  const record = relay.openMediatedBattle('campaign-helper', {
+    mode: 'campaign_npc', hostId: a.id, memberIds: [a.id],
+    eligibleIds: [a.id, b.id],
+  });
+  relay.fillBattleParty(record, relay.get(a.id), {
+    battle: record.id, side: 'a', mons: [mon(1, 999)], bag: [],
+  });
+  relay.fillBattleParty(record, relay.get(a.id), {
+    battle: record.id, side: 'b', mons: [mon(2, 999), mon(3, 999)], bag: [],
+  });
+  record.ruleset = { chart: [[100]] };
+  ok(relay.tryStartSim(record), 'a helper-eligible campaign battle starts 1x1');
+  record.campaignClaims = new Map([[b.id, 'completed-helper']]);
+  ok(relay.queueBattleAdmission(record, relay.get(b.id), {
+    battle: record.id, side: 'a', mons: [mon(4, 999)], bag: [],
+  }), 'a completed player enters as a helper');
+  ok(record.sim.bySide.b.length === 2,
+    "the canonical rival promotes its living reserve into the second seat");
+  ok(record.sim.bySide.b[1].mons[0].moves[0].power === 3,
+    "the promoted seat owns the rival's reserve rather than a duplicate rival");
+  ok(record.sim.bySide.b[0].mons.length === 1,
+    'the promoted monster leaves the original rival fighter');
+}
+
 function testFlexibleWildAdmissionBoundary() {
   const clock = makeClock();
   const relay = makeRelay(clock);
@@ -795,6 +823,7 @@ testDisconnectForfeitAfterGrace();
 testDrawCarriesNoLists();
 testCoopNpcMediated();
 testCampaignTrainerAdmission();
+testCampaignCompletedHelper();
 testCoopWildSeating();
 testFlexibleWildAdmissionBoundary();
 testFlexibleWildSecondTarget();
