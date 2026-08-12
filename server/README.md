@@ -766,6 +766,11 @@ with `config.json`. Do not delete it or replace it with a player save: protocol
 29 treats participant saves as replicas, hydrates stale replicas from this
 file, and refuses a conflicting or corrupt archive rather than choosing
 whichever player reconnects first.
+The database also carries a stable authority identity. A campaign save binds
+to that identity on first admission and an unrelated server refuses it with
+`wrong_authority`, even when the unrelated server is empty. Moving a campaign
+therefore requires an explicit archive migration; merely copying player saves
+cannot create a second canonical world by accident.
 
 The next file is **`ranking.json`**, the
 ranked-PVP season. It holds a line per **persistent player id** (32 hex,

@@ -131,11 +131,15 @@ function M.worldArchiveBegin(raw)
   local inventory = M.worldInventory(raw.inventory)
   local frontier = M.worldFrontier and M.worldFrontier(raw.frontier) or nil
   local batches = Wire.int(raw.batches, 0, 4096)
+  local authority = raw.authority == nil and nil
+    or CampaignIdentity.identifier(raw.authority, 64)
   if not (inventory and frontier and batches
     and inventory.world == frontier.world
     and inventory.compatibility == frontier.compatibility
-    and inventory.timelineHead == frontier.timelineHead) then return nil end
-  return { inventory = inventory, frontier = frontier, batches = batches }
+    and inventory.timelineHead == frontier.timelineHead
+    and (raw.authority == nil or authority)) then return nil end
+  return { inventory = inventory, frontier = frontier, batches = batches,
+    authority = authority }
 end
 
 function M.worldArchiveEnd(raw)
@@ -146,6 +150,15 @@ function M.worldArchiveEnd(raw)
   return world and compatibility and revision and #revision == 16
     and { world = world, compatibility = compatibility, revision = revision }
     or nil
+end
+
+function M.worldArchiveDisposition(raw)
+  local ending = M.worldArchiveEnd(raw)
+  local authority = type(raw) == "table"
+    and CampaignIdentity.identifier(raw.authority, 64) or nil
+  if not ending or not authority then return nil end
+  ending.authority = authority
+  return ending
 end
 
 local function checkpointState(value, depth, seen, budget)
@@ -400,6 +413,7 @@ function M.worldUnavailable(raw)
     archive_required = true, archive_incomplete = true, archive_conflict = true }
   allowed.archive_corrupt = true
   allowed.archive_storage_failed = true
+  allowed.wrong_authority = true
   local reason = allowed[raw.reason] and raw.reason or nil
   return reason and { reason = reason } or nil
 end

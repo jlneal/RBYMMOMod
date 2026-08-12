@@ -1983,13 +1983,13 @@ end
 
 handlers[CampaignWire.ARCHIVE_READY] = function(_, msg)
   if not campaignBridge or Config.PROTOCOL < 29 then return end
-  local ready = CampaignWire.worldArchiveEnd(msg)
+  local ready = CampaignWire.worldArchiveDisposition(msg)
   if ready then campaignBridge:onArchiveReady(ready) end
 end
 
 handlers[CampaignWire.ARCHIVE_NEEDED] = function(_, msg)
   if not campaignBridge or Config.PROTOCOL < 29 then return end
-  local needed = CampaignWire.worldArchiveEnd(msg)
+  local needed = CampaignWire.worldArchiveDisposition(msg)
   if needed then campaignBridge:onArchiveNeeded(needed) end
 end
 

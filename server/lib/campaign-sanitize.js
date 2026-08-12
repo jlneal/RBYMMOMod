@@ -112,11 +112,14 @@ function cleanWorldArchiveBegin(value) {
   const frontier = cleanWorldFrontier(value.frontier);
   const batches = Number.isSafeInteger(value.batches) && value.batches >= 0
     && value.batches <= 4096 ? value.batches : null;
+  const authority = value.authority == null ? null
+    : cleanProgressionId(value.authority, 64);
   if (!inventory || !frontier || batches === null
       || inventory.world !== frontier.world
       || inventory.compatibility !== frontier.compatibility
-      || inventory.timelineHead !== frontier.timelineHead) return null;
-  return { inventory, frontier, batches };
+      || inventory.timelineHead !== frontier.timelineHead
+      || (value.authority != null && !authority)) return null;
+  return { inventory, frontier, batches, authority };
 }
 
 function cleanWorldArchiveEnd(value) {
@@ -126,6 +129,12 @@ function cleanWorldArchiveEnd(value) {
   const revision = cleanHex(value.revision, 16);
   return world && compatibility && revision && revision.length === 16
     ? { world, compatibility, revision } : null;
+}
+
+function cleanWorldArchiveDisposition(value) {
+  const ending = cleanWorldArchiveEnd(value);
+  const authority = value && cleanProgressionId(value.authority, 64);
+  return ending && authority ? { ...ending, authority } : null;
 }
 
 function cleanCheckpointState(value, depth = 0, seen = new Set(), budget = { nodes: 0 }) {
@@ -419,7 +428,7 @@ function cleanWorldFrontierAdmission(value) {
 module.exports = {
   cleanProgressionId,
   cleanWorldInventory, cleanWorldBatch, cleanWorldInvitation,
-  cleanWorldArchiveBegin, cleanWorldArchiveEnd,
+  cleanWorldArchiveBegin, cleanWorldArchiveEnd, cleanWorldArchiveDisposition,
   cleanWorldClosedBase, cleanWorldClosedPackage,
   cleanWorldPrefixFrame, cleanWorldPrefixFrameAck,
   cleanWorldSequenceRequest, cleanWorldSequenceGrant,

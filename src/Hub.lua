@@ -3902,14 +3902,18 @@ function M:exportCampaignArchive()
       compatibility = state.compatibility, frontier = state.frontier,
       envelopes = envelopes }
   end
-  return { schema = 1, worlds = worlds }
+  return { schema = 2, authority = self.campaignAuthorityId, worlds = worlds }
 end
 
 function M:importCampaignArchive(raw)
-  if type(raw) ~= "table" or raw.schema ~= 1 or type(raw.worlds) ~= "table" then
+  local authority = type(raw) == "table"
+    and CampaignIdentity.identifier(raw.authority, 64) or nil
+  if type(raw) ~= "table" or raw.schema ~= 2 or not authority
+    or type(raw.worlds) ~= "table" then
     self.campaignArchiveCorrupt = true
     return false
   end
+  self.campaignAuthorityId = authority
   for _, row in ipairs(raw.worlds) do
     local frontier = CampaignWire.worldFrontier(row.frontier)
     if frontier and row.world == frontier.world
@@ -4075,9 +4079,26 @@ handlers[CampaignWire.ARCHIVE_BEGIN] = function(self, client, msg)
   end
   local begin = CampaignWire.worldArchiveBegin(msg)
   if not begin then return end
+  if not self.campaignAuthorityId then
+    local token = self:newWorldToken()
+    if not token then
+      send(client, CampaignWire.UNAVAILABLE, { reason = "archive_storage_failed" })
+      return
+    end
+    self.campaignAuthorityId = "campaign-authority-" .. token
+    if not notifyCampaignChange(self) then
+      self.campaignAuthorityId = nil
+      send(client, CampaignWire.UNAVAILABLE, { reason = "archive_storage_failed" })
+      return
+    end
+  end
+  if begin.authority and begin.authority ~= self.campaignAuthorityId then
+    send(client, CampaignWire.UNAVAILABLE, { reason = "wrong_authority" })
+    return
+  end
   local identity = { world = begin.inventory.world,
     compatibility = begin.inventory.compatibility,
-    revision = begin.frontier.revision }
+    revision = begin.frontier.revision, authority = self.campaignAuthorityId }
   if self.worldTimelines[identity.world .. "|" .. identity.compatibility] then
     send(client, CampaignWire.ARCHIVE_READY, identity)
     return

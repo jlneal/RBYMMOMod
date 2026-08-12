@@ -56,12 +56,16 @@ local hub = Hub.new({ maxPlayers = 2, protocol = 29,
 local ann, annPeer = join(hub, "ANN")
 hub:receive(ann, { type = CampaignWire.ARCHIVE_BEGIN, inventory = inventory1,
   frontier = frontier1, batches = 1 })
+check(persisted and #persisted.worlds == 0,
+  "authority identity is durable before bootstrap is accepted")
 hub:receive(ann, { type = CampaignWire.ARCHIVE_BATCH, envelope = envelope })
 hub:receive(ann, { type = CampaignWire.ARCHIVE_END, world = world,
   compatibility = compatibility, revision = frontier1.revision })
 eq(take(annPeer, CampaignWire.ARCHIVE_READY).revision, frontier1.revision,
   "embedded authority adopts a complete authenticated archive")
 check(persisted and persisted.worlds[1], "embedded authority emits durable storage")
+check(type(persisted.authority) == "string",
+  "embedded authority persists a stable server identity")
 hub:drop(ann)
 check(next(hub.worldTimelines) ~= nil, "vacancy does not erase embedded canon")
 
@@ -86,6 +90,14 @@ eq(take(stalePeer, CampaignWire.EVENTS).from, "campaign-authority",
   "stale replica hydrates from the server rather than another participant")
 eq(take(stalePeer, CampaignWire.FRONTIER).frontier.revision, frontier1.revision,
   "server retains the exact canonical frontier across restart")
+
+local unrelated = Hub.new({ maxPlayers = 1, protocol = 29 })
+local misplaced, misplacedPeer = join(unrelated, "MISPLACED")
+unrelated:receive(misplaced, { type = CampaignWire.ARCHIVE_BEGIN,
+  inventory = inventory1, frontier = frontier1, batches = 1,
+  authority = persisted.authority })
+eq(take(misplacedPeer, CampaignWire.UNAVAILABLE).reason, "wrong_authority",
+  "a save bound to one server cannot bootstrap a second canonical server")
 
 local broken = Hub.new({ maxPlayers = 2, protocol = 29 })
 eq(broken:importCampaignArchive({ schema = 0 }), false,

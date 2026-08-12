@@ -250,6 +250,9 @@ test('protocol-29 campaign archive survives vacancy and hydrates a stale replica
     timelineHead: 1, heads: heads1, tag };
   relay.handle(ann.id, { type: 'mmo.world_archive_begin', inventory: inventory1,
     frontier: frontier1, batches: 1 });
+  assert.equal(persisted.worlds.length, 0,
+    'the authority identity is durable before bootstrap is accepted');
+  assert.match(persisted.authority, /^campaign-authority-[0-9a-f]{32}$/);
   relay.handle(ann.id, { type: 'mmo.world_archive_batch', envelope: batch });
   relay.handle(ann.id, { type: 'mmo.world_archive_end', world, compatibility,
     revision: frontier1.revision });
@@ -281,6 +284,14 @@ test('protocol-29 campaign archive survives vacancy and hydrates a stale replica
   restarted.handle(stale.id, { type: 'mmo.world_advertise',
     inventory: inventory1, frontier: conflict });
   assert.equal(take(stale, 'mmo.world_unavailable').reason, 'archive_conflict');
+
+  const unrelated = new Relay({ maxPlayers: 1, protocol: 29, log: quiet });
+  const misplaced = join(unrelated, 'MISPLACED');
+  unrelated.handle(misplaced.id, { type: 'mmo.world_archive_begin',
+    inventory: inventory1, frontier: frontier1, batches: 1,
+    authority: persisted.authority });
+  assert.equal(take(misplaced, 'mmo.world_unavailable').reason, 'wrong_authority',
+    'a save bound to one server cannot bootstrap a second canonical server');
 });
 
 test('protocol-29 restart recovers a published occupant before frontier acknowledgement', () => {

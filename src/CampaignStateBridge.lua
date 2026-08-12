@@ -222,12 +222,16 @@ function M:advertise()
     -- dedicated server's 64 KiB frame ceiling regardless of payload shape.
     local batches, archiveWhy = self.api.archiveBatches(1)
     if not batches then return nil, archiveWhy end
+    if type(self.api.authorityBinding) ~= "function" then
+      return nil, "durable campaign authority binding is unavailable"
+    end
+    local authority = self.api.authorityBinding()
     self.archiveStarted = true
     self.archiveIdentity = { world = inventory.world,
       compatibility = inventory.compatibility, revision = frontier.revision }
     self.archiveBatchesPending = batches
     self.send(M.ARCHIVE_BEGIN, { inventory = inventory,
-      frontier = frontier, batches = #batches })
+      frontier = frontier, batches = #batches, authority = authority })
     return true
   end
   self.admittedBase = nil
@@ -245,6 +249,8 @@ function M:onArchiveNeeded(raw)
     or type(self.archiveBatchesPending) ~= "table" then
     return nil, "durable campaign archive request is invalid"
   end
+  local bound, bindWhy = self.api.authorityBinding(raw.authority)
+  if not bound then return nil, bindWhy end
   for _, envelope in ipairs(self.archiveBatchesPending) do
     self.send(M.ARCHIVE_BATCH, { envelope = envelope })
   end
@@ -259,6 +265,8 @@ function M:onArchiveReady(raw)
     or raw.revision ~= self.archiveIdentity.revision then
     return nil, "durable campaign archive acknowledgement is invalid"
   end
+  local bound, bindWhy = self.api.authorityBinding(raw.authority)
+  if not bound then return nil, bindWhy end
   self.archiveReady, self.archiveStarted = true, false
   self.archiveBatchesPending = nil
   return self:advertise()
@@ -406,6 +414,7 @@ function M:onUnavailable(reason)
     archive_conflict = "the player save conflicts with the server campaign archive",
     archive_corrupt = "the server campaign archive is corrupt and must be repaired",
     archive_storage_failed = "the server could not durably store campaign history",
+    wrong_authority = "this campaign is bound to a different server authority",
   }
   self.blocked = explanations[reason] or "shared-world authority is unavailable"
   failPending(self, self.blocked, true)

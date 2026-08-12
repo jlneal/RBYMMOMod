@@ -4,6 +4,7 @@ const { randomBytes } = require('node:crypto');
 const { isDeepStrictEqual } = require('node:util');
 const { cleanId } = require('./sanitize');
 const {
+  cleanProgressionId,
   cleanWorldInventory, cleanWorldBatch, cleanWorldInvitation,
   cleanWorldArchiveBegin, cleanWorldArchiveEnd,
   cleanWorldClosedPackage,
@@ -94,7 +95,8 @@ function archiveCovers(frontier, events) {
 }
 
 function exportArchive(relay) {
-  return { schema: 1, worlds: [...relay.worldTimelines.values()].map((state) => ({
+  return { schema: 2, authority: relay.campaignAuthorityId,
+    worlds: [...relay.worldTimelines.values()].map((state) => ({
     world: state.world, compatibility: state.compatibility,
     frontier: state.frontier,
     envelopes: [...(state.archiveEnvelopes || new Map()).values()],
@@ -103,7 +105,8 @@ function exportArchive(relay) {
 
 function importArchive(relay, raw) {
   if (!raw) return true;
-  if (raw.schema !== 1 || !Array.isArray(raw.worlds)) return false;
+  if (raw.schema !== 2 || cleanProgressionId(raw.authority, 64)
+      !== relay.campaignAuthorityId || !Array.isArray(raw.worlds)) return false;
   for (const row of raw.worlds) {
     const frontier = cleanWorldFrontier(row && row.frontier);
     if (!frontier || row.world !== frontier.world
@@ -355,9 +358,20 @@ handlers['mmo.world_archive_begin'] = (relay, client, msg) => {
   }
   const begin = cleanWorldArchiveBegin(msg);
   if (!begin) return;
+  if (!relay.campaignAuthorityStored) {
+    if (!notifyArchiveChange(relay)) {
+      relay.send(client, 'mmo.world_unavailable', { reason: 'archive_storage_failed' });
+      return;
+    }
+    relay.campaignAuthorityStored = true;
+  }
+  if (begin.authority && begin.authority !== relay.campaignAuthorityId) {
+    relay.send(client, 'mmo.world_unavailable', { reason: 'wrong_authority' });
+    return;
+  }
   const identity = { world: begin.inventory.world,
     compatibility: begin.inventory.compatibility,
-    revision: begin.frontier.revision };
+    revision: begin.frontier.revision, authority: relay.campaignAuthorityId };
   if (relay.worldTimelines.has(`${identity.world}|${identity.compatibility}`)) {
     relay.send(client, 'mmo.world_archive_ready', identity);
     return;
@@ -682,6 +696,9 @@ handlers['mmo.world_sequence_cancel'] = (relay, client, msg) => {
 
 function initialize(relay, archive) {
   if (!(relay.worldTimelines instanceof Map)) relay.worldTimelines = new Map();
+  relay.campaignAuthorityId = archive && cleanProgressionId(archive.authority, 64)
+    || `campaign-authority-${randomBytes(16).toString('hex')}`;
+  relay.campaignAuthorityStored = Boolean(archive);
   if (relay.protocol >= 29) relay.campaignArchiveCorrupt = !importArchive(relay, archive);
 }
 

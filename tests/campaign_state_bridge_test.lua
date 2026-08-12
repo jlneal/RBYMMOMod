@@ -266,6 +266,7 @@ eq(bridge19.authorized, false,
 
 -- Protocol 29 makes durable server adoption precede ordinary admission.
 local sent29, attached29 = {}, nil
+local binding29
 local foundation29 = {
   apiVersion = 4,
   registerTransport = function(_, transport)
@@ -279,6 +280,11 @@ local foundation29 = {
         canonicalDigest = string.rep("b", 16), heads = {},
         revision = string.rep("c", 16), tag = string.rep("d", 64) } end,
       archiveBatches = function() return {} end,
+      authorityBinding = function(authority)
+        if authority and binding29 and authority ~= binding29 then return nil end
+        binding29 = binding29 or authority
+        return binding29
+      end,
       admission = function() return { state = "matched",
         replica = { revision = string.rep("c", 16) } } end,
       validateGrantBase = function() return true end,
@@ -301,12 +307,14 @@ eq(sent29[1].kind, Bridge.ARCHIVE_BEGIN,
   "archive manifest precedes canonical admission")
 eq(#sent29, 1, "ordinary advertisement waits for server archive disposition")
 check(bridge29:onArchiveNeeded({ world = "world-29",
-  compatibility = "campaign-state.4.durable", revision = string.rep("c", 16) }),
+  compatibility = "campaign-state.4.durable", revision = string.rep("c", 16),
+  authority = "campaign-authority-one" }),
   "empty server requests the participant's authenticated source archive")
 eq(sent29[#sent29].kind, Bridge.ARCHIVE_END,
   "empty archive still has an explicit completion boundary")
 check(bridge29:onArchiveReady({ world = "world-29",
-  compatibility = "campaign-state.4.durable", revision = string.rep("c", 16) }),
+  compatibility = "campaign-state.4.durable", revision = string.rep("c", 16),
+  authority = "campaign-authority-one" }),
   "exact server archive acknowledgement resumes admission")
 eq(sent29[#sent29].kind, Bridge.ADVERTISE,
   "admission advertisement follows durable archive adoption")
