@@ -5887,8 +5887,15 @@ local friends = Friends.new(
             log = { warn = function() end } } })
 friends:setHub("screens:7788", "ME")
 
+local worldOffer, worldInvited, worldAccepted = false, nil, nil
 local screenCtx = { roster = roster, party = party, friends = friends,
                     coop = { pendingOffer = function() return nil end },
+                    campaign = {
+                      active = function() return true end,
+                      offer = function() return worldOffer end,
+                      invite = function(id) worldInvited = id; return true end,
+                      accept = function(id) worldAccepted = id; return true end,
+                    },
                     client = { playerName = function() return "ME" end } }
 local screenUi = Ui.new(screenCtx)
 check(pcall(function() screenUi:install() end),
@@ -6013,6 +6020,30 @@ do
      "no friend row is wider than PARTY BATTLE, so the menu is exactly as "
      .. "wide as it has always been")
   friends:_add("BOB")
+end
+
+-- ------- explicit shared-world transport controls
+
+do
+  worldOffer = false
+  local menu = registry[Ui.SCREEN.ACTIONS].new({}, { playerId = "bob" })
+  check(labelsOf(menu):find("SHARE WORLD", 1, true),
+    "an active Campaign State save can invite the selected player")
+  for _, item in ipairs(menu.items) do
+    if item.label == "SHARE WORLD" then item.onSelect(); break end
+  end
+  eq(worldInvited, "bob", "SHARE WORLD targets that player's stable connection")
+  eq(pushes[#pushes].id, Ui.SCREEN.TEXT,
+    "the invitation result is presented through the supported screen seam")
+
+  worldOffer = true
+  menu = registry[Ui.SCREEN.ACTIONS].new({}, { playerId = "bob" })
+  check(labelsOf(menu):find("JOIN WORLD", 1, true),
+    "a received invitation replaces SHARE with an explicit JOIN WORLD action")
+  for _, item in ipairs(menu.items) do
+    if item.label == "JOIN WORLD" then item.onSelect(); break end
+  end
+  eq(worldAccepted, "bob", "JOIN WORLD adopts only the selected sender's invitation")
 end
 
 -- ------- ...and the same row for somebody who is not here

@@ -2685,6 +2685,19 @@ function M:install()
       items[#items + 1] = { label = "JOIN", join = true }
     end
 
+    -- Campaign State is transport-neutral, but an invitation still needs a
+    -- human-facing place to cross this transport. Keep it on the selected
+    -- player's action card: SHARE sends that player this save's authenticated
+    -- world invitation; JOIN appears only after their invitation is present.
+    local campaign = ctx.campaign
+    if campaign and campaign.active() then
+      if campaign.offer(player.id) then
+        items[#items + 1] = { label = "JOIN WORLD", worldJoin = true }
+      else
+        items[#items + 1] = { label = "SHARE WORLD", worldInvite = true }
+      end
+    end
+
     items[#items + 1] = { label = "TRADE", kind = "trade" }
     items[#items + 1] = { label = "BATTLE", kind = "battle" }
     -- Directly under BATTLE, which is where the brief puts it and where it
@@ -2715,6 +2728,7 @@ function M:install()
       local kind, wantsProfile, wantsInvite = item.kind, item.profile, item.invite
       local wantsJoin, wantsParty = item.join, item.party
       local wantsFriend, wantsUnfriend = item.friend, item.unfriend
+      local wantsWorldJoin, wantsWorldInvite = item.worldJoin, item.worldInvite
       item.onSelect = function()
         if wantsProfile then
           mod.ui.push(game, SCREEN.PROFILE,
@@ -2733,6 +2747,19 @@ function M:install()
           ctx.party:invite(player)
         elseif wantsJoin then
           ctx.coop:joinFromMenu(game)
+        elseif wantsWorldJoin or wantsWorldInvite then
+          local result, why
+          if wantsWorldJoin then result, why = campaign.accept(player.id)
+          else result, why = campaign.invite(player.id) end
+          local message
+          if result then
+            message = wantsWorldJoin and "Shared world joined."
+              or (result == "pending" and "World invitation\nis being prepared."
+                or "World invitation sent.")
+          else
+            message = tostring(why or "Shared world action failed.")
+          end
+          mod.ui.push(game, SCREEN.TEXT, { text = message, onDone = reopen })
         elseif wantsParty then
           -- The current map is read here and handed down, because Coop holds
           -- no engine dependency of its own -- see M:challenge's header.

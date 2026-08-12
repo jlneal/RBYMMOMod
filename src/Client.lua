@@ -117,6 +117,22 @@ local ctx = {
   chat = Chat.new(),
   avatars = Avatars.new(),
 }
+ctx.campaign = {
+  active = function()
+    return campaignBridge and campaignBridge:active() == true
+  end,
+  offer = function(from)
+    return campaignBridge and campaignBridge:offer(from) ~= nil
+  end,
+  invite = function(to)
+    if not campaignBridge then return nil, "shared-world transport is unavailable" end
+    return campaignBridge:invite(to)
+  end,
+  accept = function(from)
+    if not campaignBridge then return nil, "shared-world transport is unavailable" end
+    return campaignBridge:acceptFrom(from)
+  end,
+}
 
 transport = Transport.new()
 local server = HostServer.new()
