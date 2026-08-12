@@ -3,6 +3,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { Relay } = require('./lib/relay');
+const campaignAuthority = require('./lib/campaign-authority');
 
 const quiet = { debug() {}, info() {}, warn() {}, error() {} };
 let joinSerial = 0;
@@ -228,4 +229,129 @@ test('dedicated protocol-24 hub relays bounded prefixes and acknowledged frames'
   const acknowledgement = take(ann, 'mmo.world_prefix_frame_ack');
   assert.equal(acknowledgement.from, bob.id);
   assert.equal(acknowledgement.index, frame.index);
+});
+
+test('protocol-29 campaign archive survives vacancy and hydrates a stale replica', () => {
+  let persisted = null;
+  const relay = new Relay({ maxPlayers: 2, protocol: 29, log: quiet,
+    onCampaignChange(value) { persisted = structuredClone(value); } });
+  const ann = join(relay, 'DURABLEANN');
+  const tag = 'a'.repeat(64);
+  const world = 'durable-world'; const compatibility = 'campaign-state.4.durable';
+  const event = { schema: 1, id: 'ann:1', world, actor: 'ann', seq: 1,
+    position: 1, transaction: 'durable-transaction-one', owner: 'world',
+    kind: 'pokemon.unique.resolve', subject: 'articuno', payload: { outcome: 'captured' } };
+  const batch = { schema: 1, world, compatibility, events: [event], tag };
+  const heads1 = { ann: 1 };
+  const frontier1 = { version: 1, world, compatibility, timelineHead: 1,
+    canonicalDigest: 'b'.repeat(16), heads: heads1,
+    revision: 'c'.repeat(16), tag };
+  const inventory1 = { schema: 1, world, compatibility, player: 'ann',
+    timelineHead: 1, heads: heads1, tag };
+  relay.handle(ann.id, { type: 'mmo.world_archive_begin', inventory: inventory1,
+    frontier: frontier1, batches: 1 });
+  relay.handle(ann.id, { type: 'mmo.world_archive_batch', envelope: batch });
+  relay.handle(ann.id, { type: 'mmo.world_archive_end', world, compatibility,
+    revision: frontier1.revision });
+  assert.equal(take(ann, 'mmo.world_archive_ready').revision, frontier1.revision);
+  assert.equal(persisted.worlds[0].frontier.revision, frontier1.revision);
+  relay.drop(ann.id);
+  assert.equal(relay.worldTimelines.size, 1, 'vacancy does not erase canon');
+
+  const restarted = new Relay({ maxPlayers: 2, protocol: 29, log: quiet,
+    campaignArchive: campaignAuthority.exportArchive(relay) });
+  const stale = join(restarted, 'DURABLESTALE');
+  const heads0 = { ann: 0 };
+  const frontier0 = { ...frontier1, timelineHead: 0, heads: heads0,
+    canonicalDigest: 'd'.repeat(16), revision: 'e'.repeat(16) };
+  const inventory0 = { ...inventory1, player: 'bob', timelineHead: 0, heads: heads0 };
+  restarted.handle(stale.id, { type: 'mmo.world_archive_begin',
+    inventory: inventory0, frontier: frontier0, batches: 0 });
+  restarted.handle(stale.id, { type: 'mmo.world_archive_end', world, compatibility,
+    revision: frontier0.revision });
+  assert.ok(take(stale, 'mmo.world_archive_ready'));
+  restarted.handle(stale.id, { type: 'mmo.world_advertise',
+    inventory: inventory0, frontier: frontier0 });
+  assert.equal(take(stale, 'mmo.world_events').from, 'campaign-authority');
+  assert.equal(take(stale, 'mmo.world_frontier').frontier.revision,
+    frontier1.revision);
+
+  const conflict = { ...frontier1, canonicalDigest: 'f'.repeat(16),
+    revision: '1'.repeat(16) };
+  restarted.handle(stale.id, { type: 'mmo.world_advertise',
+    inventory: inventory1, frontier: conflict });
+  assert.equal(take(stale, 'mmo.world_unavailable').reason, 'archive_conflict');
+});
+
+test('protocol-29 restart recovers a published occupant before frontier acknowledgement', () => {
+  const relay = new Relay({ maxPlayers: 1, protocol: 29, log: quiet });
+  const ann = join(relay, 'CRASHANN');
+  const world = 'crash-window-world'; const compatibility = 'campaign-state.4.durable';
+  const tag = '2'.repeat(64); const D0 = '3'.repeat(16); const R0 = '4'.repeat(16);
+  const heads0 = { ann: 0 };
+  const frontier0 = { version: 1, world, compatibility, timelineHead: 0,
+    canonicalDigest: D0, heads: heads0, revision: R0, tag };
+  const inventory0 = { schema: 1, world, compatibility, player: 'ann',
+    timelineHead: 0, heads: heads0, tag };
+  relay.handle(ann.id, { type: 'mmo.world_archive_begin', inventory: inventory0,
+    frontier: frontier0, batches: 0 });
+  take(ann, 'mmo.world_archive_needed');
+  relay.handle(ann.id, { type: 'mmo.world_archive_end', world, compatibility,
+    revision: R0 });
+  take(ann, 'mmo.world_archive_ready');
+  relay.handle(ann.id, { type: 'mmo.world_advertise', inventory: inventory0,
+    frontier: frontier0 });
+  take(ann, 'mmo.world_frontier');
+  const grantBase = { version: 1, world, compatibility, position: 1,
+    baseDigest: D0, authorityRevision: R0, replicaRevision: R0 };
+  relay.handle(ann.id, { type: 'mmo.world_frontier_ack', admission: {
+    frontier: frontier0, authorityRevision: R0, replicaRevision: R0, grantBase } });
+  take(ann, 'mmo.world_frontier_ready');
+  relay.handle(ann.id, { type: 'mmo.world_sequence_request', request: 'crash-one',
+    actor: 'ann', kind: 'pokemon.unique.resolve', subject: 'articuno', base: grantBase });
+  const grant = take(ann, 'mmo.world_sequence_grant');
+  const event = { schema: 1, id: 'ann:1', world, actor: 'ann', seq: 1,
+    position: 1, transaction: 'crash-window-transaction', owner: 'world',
+    kind: 'pokemon.unique.resolve', subject: 'articuno', payload: { outcome: 'captured' } };
+  relay.handle(ann.id, { type: 'mmo.world_events', envelope: {
+    schema: 1, world, compatibility, events: [event], tag } });
+  const crashImage = campaignAuthority.exportArchive(relay);
+  assert.equal(crashImage.worlds[0].frontier.revision, R0,
+    'disk image may precede the author frontier but retains its signed occupant');
+
+  const restarted = new Relay({ maxPlayers: 1, protocol: 29, log: quiet,
+    campaignArchive: crashImage });
+  const returner = join(restarted, 'CRASHRETURN');
+  const frontier1 = { ...frontier0, timelineHead: 1, heads: { ann: 1 },
+    canonicalDigest: '5'.repeat(16), revision: '6'.repeat(16) };
+  const inventory1 = { ...inventory0, timelineHead: 1, heads: { ann: 1 } };
+  restarted.handle(returner.id, { type: 'mmo.world_archive_begin',
+    inventory: inventory1, frontier: frontier1, batches: 1 });
+  assert.ok(take(returner, 'mmo.world_archive_ready'));
+  restarted.handle(returner.id, { type: 'mmo.world_advertise',
+    inventory: inventory1, frontier: frontier1 });
+  assert.equal(restarted.worldTimelines.get(`${world}|${compatibility}`)
+    .frontier.revision, frontier1.revision);
+  assert.equal(take(returner, 'mmo.world_frontier').frontier.revision,
+    frontier1.revision, 'recovered occupant is never reopened as position one');
+});
+
+test('protocol-29 refuses authority when canonical storage cannot commit', () => {
+  const relay = new Relay({ maxPlayers: 1, protocol: 29, log: quiet,
+    onCampaignChange() { return false; } });
+  const ann = join(relay, 'FULLDISK');
+  const world = 'failed-store-world'; const compatibility = 'campaign-state.4.durable';
+  const frontier = { version: 1, world, compatibility, timelineHead: 0,
+    canonicalDigest: '7'.repeat(16), heads: {}, revision: '8'.repeat(16),
+    tag: '9'.repeat(64) };
+  const inventory = { schema: 1, world, compatibility, player: 'ann',
+    timelineHead: 0, heads: {}, tag: 'a'.repeat(64) };
+  relay.handle(ann.id, { type: 'mmo.world_archive_begin', inventory, frontier,
+    batches: 0 });
+  take(ann, 'mmo.world_archive_needed');
+  relay.handle(ann.id, { type: 'mmo.world_archive_end', world, compatibility,
+    revision: frontier.revision });
+  assert.equal(take(ann, 'mmo.world_archive_ready'), null);
+  assert.equal(take(ann, 'mmo.world_unavailable').reason, 'archive_storage_failed');
+  assert.equal(relay.worldTimelines.size, 0);
 });

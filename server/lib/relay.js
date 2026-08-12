@@ -134,7 +134,10 @@ const DEFAULT_SPRITE = 'SPRITE_RED';
 // silently ignores that lifecycle and would fork the visible world.
 // 11 adds airborne presence, mount identity, and altitude-aware SKY claims.
 // In this combined line that is generation 27, after shared field populations.
-const PROTOCOL = 28;
+// 29 makes the hub's durable campaign archive the sole canonical database.
+// A protocol-28 hub forgets its frontier when the last player leaves or the
+// process restarts and can therefore adopt a stale participant save as canon.
+const PROTOCOL = 29;
 
 // How long a four-way PARTY BATTLE ask waits for its three answers. Mirrors
 // Config.COOP_ASK_TIMEOUT: every one of the four is looking at a box right
@@ -1573,7 +1576,9 @@ class Relay {
 
     /** id -> client */
     this.clients = new Map();
-    campaignAuthority.initialize(this);
+    this.onCampaignChange = typeof opts.onCampaignChange === 'function'
+      ? opts.onCampaignChange : null;
+    campaignAuthority.initialize(this, opts.campaignArchive);
     /** sessionId -> { a, b, kind } */
     this.sessions = new Map();
     /** partyId -> [memberId, ...] */

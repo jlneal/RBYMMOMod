@@ -153,7 +153,9 @@ M.MOD_ID = "rby_mmo"
 -- In this combined line that is generation 27, after shared field populations.
 -- 28 adds live `campaign_npc` trainer sessions: one player may begin against
 -- the trainer while an eligible second player joins at a clean turn boundary.
-M.PROTOCOL = 28
+-- 29 makes the hub's durable campaign archive the sole canonical database;
+-- participant saves bootstrap or hydrate it but never replace its frontier.
+M.PROTOCOL = 29
 
 -- The port an in-game host binds, and the one a bare address is completed
 -- with.

@@ -755,11 +755,19 @@ order:
 3. `./config.json` next to where you ran the command
 4. `/data/config.json`, when `/data` exists — the container's volume
 
-Next to it, the hub keeps three files it writes itself and opens one socket.
-None of them is a setting and none of them is yours to edit; each can be
-deleted without consequence beyond what it holds.
+Next to it, the hub keeps four files it writes itself and opens one socket.
+None of them is a setting and none of them is yours to edit.
 
-The first is **`ranking.json`**, the
+For shared campaigns, **`campaigns.json`** is the canonical campaign database.
+It contains opaque authenticated campaign event envelopes and their exact
+frontiers; the hub cannot read or forge their semantic meaning. It is rewritten
+atomically after accepted campaign history and on clean shutdown. Back it up
+with `config.json`. Do not delete it or replace it with a player save: protocol
+29 treats participant saves as replicas, hydrates stale replicas from this
+file, and refuses a conflicting or corrupt archive rather than choosing
+whichever player reconnects first.
+
+The next file is **`ranking.json`**, the
 ranked-PVP season. It holds a line per **persistent player id** (32 hex,
 PROTOCOL 16) — display name, character, points, and how many battles they
 have played and won — and it is written (debounced) whenever a battle moves

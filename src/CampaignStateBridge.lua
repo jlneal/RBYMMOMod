@@ -24,6 +24,11 @@ M.FRONTIER_READY = "mmo.world_frontier_ready"
 M.PREFIX = "mmo.world_prefix"
 M.PREFIX_FRAME = "mmo.world_prefix_frame"
 M.PREFIX_FRAME_ACK = "mmo.world_prefix_frame_ack"
+M.ARCHIVE_BEGIN = "mmo.world_archive_begin"
+M.ARCHIVE_BATCH = "mmo.world_archive_batch"
+M.ARCHIVE_END = "mmo.world_archive_end"
+M.ARCHIVE_NEEDED = "mmo.world_archive_needed"
+M.ARCHIVE_READY = "mmo.world_archive_ready"
 M.MAX_OUTSTANDING = 32
 M.MAX_OFFERS = 16
 M.MAX_PREFIX_STREAMS = 8
@@ -69,9 +74,11 @@ function M.new(options)
     idFactory = options.idFactory, connected = options.connected,
     api = nil, pending = {}, grants = {}, offers = {}, prefixOutgoing = {}, serial = 0,
     frontierAdmission = options.frontierAdmission == true,
+    durableArchive = options.durableArchive == true,
     admission = nil, admittedBase = nil, authorityRevision = nil,
     authorized = false, blocked = nil, membershipPending = false,
-    rejoinRequired = false }, M)
+    rejoinRequired = false, archiveReady = false, archiveStarted = false,
+    archiveIdentity = nil, archiveBatchesPending = nil }, M)
 end
 
 function M:requestId()
@@ -206,11 +213,55 @@ function M:advertise()
     if not frontier then return nil, why end
     self.admission:reset("new frontier advertisement")
   end
+  if self.durableArchive and not self.archiveReady then
+    if self.archiveStarted then return true end
+    if type(self.api.archiveBatches) ~= "function" then
+      return nil, "durable campaign archive export is unavailable"
+    end
+    -- One semantic event per line keeps every bootstrap message below the
+    -- dedicated server's 64 KiB frame ceiling regardless of payload shape.
+    local batches, archiveWhy = self.api.archiveBatches(1)
+    if not batches then return nil, archiveWhy end
+    self.archiveStarted = true
+    self.archiveIdentity = { world = inventory.world,
+      compatibility = inventory.compatibility, revision = frontier.revision }
+    self.archiveBatchesPending = batches
+    self.send(M.ARCHIVE_BEGIN, { inventory = inventory,
+      frontier = frontier, batches = #batches })
+    return true
+  end
   self.admittedBase = nil
   self.authorityRevision = nil
   self.authorized, self.blocked, self.rejoinRequired = false, nil, false
   self.send(M.ADVERTISE, { inventory = inventory, frontier = frontier })
   return true
+end
+
+function M:onArchiveNeeded(raw)
+  if not self.durableArchive or type(raw) ~= "table"
+    or not self.archiveIdentity or raw.world ~= self.archiveIdentity.world
+    or raw.compatibility ~= self.archiveIdentity.compatibility
+    or raw.revision ~= self.archiveIdentity.revision
+    or type(self.archiveBatchesPending) ~= "table" then
+    return nil, "durable campaign archive request is invalid"
+  end
+  for _, envelope in ipairs(self.archiveBatchesPending) do
+    self.send(M.ARCHIVE_BATCH, { envelope = envelope })
+  end
+  self.send(M.ARCHIVE_END, self.archiveIdentity)
+  return true
+end
+
+function M:onArchiveReady(raw)
+  if not self.durableArchive or type(raw) ~= "table"
+    or not self.archiveIdentity or raw.world ~= self.archiveIdentity.world
+    or raw.compatibility ~= self.archiveIdentity.compatibility
+    or raw.revision ~= self.archiveIdentity.revision then
+    return nil, "durable campaign archive acknowledgement is invalid"
+  end
+  self.archiveReady, self.archiveStarted = true, false
+  self.archiveBatchesPending = nil
+  return self:advertise()
 end
 
 function M:onReady(raw)
@@ -348,9 +399,15 @@ end
 
 function M:onUnavailable(reason)
   self.authorized = false
-  self.blocked = reason == "duplicate_player"
-    and "this shared-world player is already connected"
-    or "shared-world authority is unavailable"
+  local explanations = {
+    duplicate_player = "this shared-world player is already connected",
+    archive_required = "the server has not adopted this campaign archive",
+    archive_incomplete = "the server requires the uncompacted campaign archive",
+    archive_conflict = "the player save conflicts with the server campaign archive",
+    archive_corrupt = "the server campaign archive is corrupt and must be repaired",
+    archive_storage_failed = "the server could not durably store campaign history",
+  }
+  self.blocked = explanations[reason] or "shared-world authority is unavailable"
   failPending(self, self.blocked, true)
   return true
 end
@@ -552,6 +609,8 @@ function M:reset(reason)
   self.authorized, self.blocked = false, nil
   self.membershipPending = false
   self.rejoinRequired = false
+  self.archiveReady, self.archiveStarted, self.archiveIdentity = false, false, nil
+  self.archiveBatchesPending = nil
   return true
 end
 

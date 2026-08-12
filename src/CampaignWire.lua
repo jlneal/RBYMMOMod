@@ -24,6 +24,11 @@ M.FRONTIER_READY = "mmo.world_frontier_ready"
 M.PREFIX = "mmo.world_prefix"
 M.PREFIX_FRAME = "mmo.world_prefix_frame"
 M.PREFIX_FRAME_ACK = "mmo.world_prefix_frame_ack"
+M.ARCHIVE_BEGIN = "mmo.world_archive_begin"
+M.ARCHIVE_BATCH = "mmo.world_archive_batch"
+M.ARCHIVE_END = "mmo.world_archive_end"
+M.ARCHIVE_NEEDED = "mmo.world_archive_needed"
+M.ARCHIVE_READY = "mmo.world_archive_ready"
 
 local function worldPayload(value, depth, seen, budget)
   local kind = type(value)
@@ -119,6 +124,28 @@ function M.worldBatch(raw)
   end
   return { schema = 1, world = world, compatibility = compatibility,
     events = events, tag = tag }
+end
+
+function M.worldArchiveBegin(raw)
+  if type(raw) ~= "table" then return nil end
+  local inventory = M.worldInventory(raw.inventory)
+  local frontier = M.worldFrontier and M.worldFrontier(raw.frontier) or nil
+  local batches = Wire.int(raw.batches, 0, 16384)
+  if not (inventory and frontier and batches
+    and inventory.world == frontier.world
+    and inventory.compatibility == frontier.compatibility
+    and inventory.timelineHead == frontier.timelineHead) then return nil end
+  return { inventory = inventory, frontier = frontier, batches = batches }
+end
+
+function M.worldArchiveEnd(raw)
+  if type(raw) ~= "table" then return nil end
+  local world = CampaignIdentity.identifier(raw.world, 64)
+  local compatibility = CampaignIdentity.identifier(raw.compatibility, 96)
+  local revision = Wire.hex(raw.revision, 16)
+  return world and compatibility and revision and #revision == 16
+    and { world = world, compatibility = compatibility, revision = revision }
+    or nil
 end
 
 local function checkpointState(value, depth, seen, budget)
@@ -369,8 +396,11 @@ end
 
 function M.worldUnavailable(raw)
   if type(raw) ~= "table" then return nil end
-  local reason = raw.reason == "duplicate_player" and "duplicate_player"
-    or (raw.reason == "invalid_world" and "invalid_world" or nil)
+  local allowed = { duplicate_player = true, invalid_world = true,
+    archive_required = true, archive_incomplete = true, archive_conflict = true }
+  allowed.archive_corrupt = true
+  allowed.archive_storage_failed = true
+  local reason = allowed[raw.reason] and raw.reason or nil
   return reason and { reason = reason } or nil
 end
 

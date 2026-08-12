@@ -264,6 +264,53 @@ eq(attached19.authority:commit("grant-reset-19", {}), nil,
 eq(bridge19.authorized, false,
   "reopened save must repeat canonical frontier admission")
 
+-- Protocol 29 makes durable server adoption precede ordinary admission.
+local sent29, attached29 = {}, nil
+local foundation29 = {
+  apiVersion = 4,
+  registerTransport = function(_, transport)
+    attached29 = transport
+    transport.attach({
+      inventory = function() return { schema = 1, world = "world-29",
+        compatibility = "campaign-state.4.durable", player = "ann",
+        timelineHead = 0, heads = {}, tag = string.rep("a", 64) } end,
+      frontier = function() return { version = 1, world = "world-29",
+        compatibility = "campaign-state.4.durable", timelineHead = 0,
+        canonicalDigest = string.rep("b", 16), heads = {},
+        revision = string.rep("c", 16), tag = string.rep("d", 64) } end,
+      archiveBatches = function() return {} end,
+      admission = function() return { state = "matched",
+        replica = { revision = string.rep("c", 16) } } end,
+      validateGrantBase = function() return true end,
+      batch = function() return {} end, missing = function() return {} end,
+      receive = function() return 0 end,
+      status = function() return { active = true, worldId = "world-29",
+        playerId = "ann" } end,
+    })
+    return true
+  end,
+}
+local bridge29 = assert(Bridge.new({ foundation = foundation29,
+  frontierAdmission = true, durableArchive = true,
+  send = function(kind, payload)
+    sent29[#sent29 + 1] = { kind = kind, payload = payload }
+  end }))
+assert(bridge29:install())
+check(bridge29:advertise(), "durable bridge starts server archive bootstrap")
+eq(sent29[1].kind, Bridge.ARCHIVE_BEGIN,
+  "archive manifest precedes canonical admission")
+eq(#sent29, 1, "ordinary advertisement waits for server archive disposition")
+check(bridge29:onArchiveNeeded({ world = "world-29",
+  compatibility = "campaign-state.4.durable", revision = string.rep("c", 16) }),
+  "empty server requests the participant's authenticated source archive")
+eq(sent29[#sent29].kind, Bridge.ARCHIVE_END,
+  "empty archive still has an explicit completion boundary")
+check(bridge29:onArchiveReady({ world = "world-29",
+  compatibility = "campaign-state.4.durable", revision = string.rep("c", 16) }),
+  "exact server archive acknowledgement resumes admission")
+eq(sent29[#sent29].kind, Bridge.ADVERTISE,
+  "admission advertisement follows durable archive adoption")
+
 -- Protocol 23 closes the one gap ordinary missing-batch exchange cannot cross;
 -- protocol 24 adds acknowledged framing above the one-message boundary.
 local sent23, attached23, adopted23 = {}, nil, nil

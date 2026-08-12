@@ -106,6 +106,7 @@ const CREDENTIAL_SAVE_INTERVAL_MS = 1000;
 // the same reason: a player must never be waiting on a filesystem.
 const RANKING_FILENAME = 'ranking.json';
 const RANKING_SAVE_INTERVAL_MS = 1000;
+const CAMPAIGN_FILENAME = 'campaigns.json';
 
 // The operator snapshot: who is connected and where, written beside the
 // config so a separate short-lived process (`rby-mmo-hub players`) can read
@@ -551,6 +552,20 @@ function start(options = {}) {
     ? path.join(path.dirname(configPath), HISTORY_FILENAME) : null;
   const adminPath = configPath
     ? path.join(path.dirname(configPath), ADMIN_SOCKET_FILENAME) : null;
+  const campaignPath = configPath
+    ? path.join(path.dirname(configPath), CAMPAIGN_FILENAME) : null;
+  let campaignArchive = null;
+  if (campaignPath) {
+    try {
+      campaignArchive = JSON.parse(fs.readFileSync(campaignPath, 'utf8'));
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        campaignArchive = { schema: 0, corrupt: true };
+        log.error(`could not read ${safe(campaignPath)} (${safe(err.message)}); `
+          + 'shared campaigns will refuse recovery until the file is repaired');
+      }
+    }
+  }
 
   const relay = new Relay({
     maxPlayers: config.maxPlayers,
@@ -566,6 +581,8 @@ function start(options = {}) {
     onRankChange: () => noteRankChange(),
     onRosterChange: () => noteRosterChange(),
     onMatchSettled: (record) => appendHistory(record),
+    campaignArchive,
+    onCampaignChange: (snapshot) => noteCampaignChange(snapshot),
     // The greeting line, if the host wrote one. Mutable on the relay and
     // re-applied by reload(), because a message of the day whose whole point
     // is to say what is happening today must not need a restart to change.
@@ -605,6 +622,8 @@ function start(options = {}) {
   let statusTimer = null;
   let statusDirty = false;
   let statusBeat = null;
+  let campaignDirty = false;
+  let campaignSnapshot = campaignArchive;
   // The operator's listener, or null when it was not asked for or did not
   // come up. Only close() reads it, and it has to cope with both.
   let adminHandle = null;
@@ -707,6 +726,30 @@ function start(options = {}) {
       // still authoritative for this run, it just will not survive a restart.
       log.error(`could not save the ranking to ${safe(rankingPath)}: ` +
         `${safe(err.message)}`);
+    }
+  }
+
+  function noteCampaignChange(snapshot) {
+    if (!campaignPath) return true;
+    campaignSnapshot = snapshot;
+    campaignDirty = true;
+    return flushCampaigns();
+  }
+
+  function flushCampaigns() {
+    if (!campaignDirty || !campaignPath || !campaignSnapshot) return true;
+    campaignDirty = false;
+    try {
+      const temporary = `${campaignPath}.tmp`;
+      fs.writeFileSync(temporary,
+        `${JSON.stringify(campaignSnapshot, null, 2)}\n`, { mode: 0o600 });
+      fs.renameSync(temporary, campaignPath);
+      return true;
+    } catch (err) {
+      campaignDirty = true;
+      log.error(`could not save shared campaigns to ${safe(campaignPath)}: `
+        + `${safe(err.message)}`);
+      return false;
     }
   }
 
@@ -1313,6 +1356,7 @@ function start(options = {}) {
     // same goes for a battle somebody won a moment ago.
     flushCredentials();
     flushRanking();
+    flushCampaigns();
 
     /*
      * The last thing the snapshot says. Everyone is about to be disconnected
@@ -1519,6 +1563,7 @@ function start(options = {}) {
           // which is the same "there is no such file" every other path here
           // reports the same way.
           historyPath,
+          campaignPath,
           adminPath,
           relay,
           limits,
@@ -1559,4 +1604,5 @@ function start(options = {}) {
 module.exports = {
   start, MAX_LINE, SWEEP_INTERVAL_MS, STATUS_FILENAME, STATUS_HEARTBEAT_MS,
   HISTORY_FILENAME, HISTORY_MAX_BYTES, ADMIN_SOCKET_FILENAME,
+  CAMPAIGN_FILENAME,
 };

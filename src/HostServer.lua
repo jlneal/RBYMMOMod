@@ -152,6 +152,8 @@ function M:start(port, maxPlayers, joinCode, opts)
   -- between "the trade half-happened" and knowing why. Hub only calls this
   -- once per connection, so a peer sending nothing but junk cannot flood it.
   opts = opts or {}
+  local campaignArchive = mod.save and mod.save.get
+    and mod.save:get("campaignAuthorityArchive") or nil
   self.hub = Hub.new({
     maxPlayers = maxPlayers,
     joinCode = code,
@@ -161,6 +163,14 @@ function M:start(port, maxPlayers, joinCode, opts)
     coopExpEnabled = opts.coopExpEnabled,
     coopMoneyEnabled = opts.coopMoneyEnabled,
     proximityJoinEnabled = opts.proximityJoinEnabled,
+    onCampaignChange = function(snapshot)
+      if mod.save and mod.save.set then
+        local ok = pcall(mod.save.set, mod.save,
+          "campaignAuthorityArchive", snapshot)
+        return ok
+      end
+      return false
+    end,
     onDrop = function(reason, clientId)
       mod.log:warn("refused a relayed message from player %s (%s); "
         .. "if a trade or battle stalled, this is why -- ask them to "
@@ -174,6 +184,9 @@ function M:start(port, maxPlayers, joinCode, opts)
         tostring(msgType), tostring(clientId), tostring(err))
     end,
   })
+  if Config.PROTOCOL >= 29 and campaignArchive then
+    self.hub:importCampaignArchive(campaignArchive)
+  end
   self.conns = {}
   self.running = true
   self.error = nil

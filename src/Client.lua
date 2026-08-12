@@ -93,6 +93,7 @@ function M.installCampaignBridge()
   local bridge, why = CampaignStateBridge.new({ foundation = foundation,
     idFactory = campaignBridgeId,
     frontierAdmission = Config.PROTOCOL >= 19,
+    durableArchive = Config.PROTOCOL >= 29,
     connected = function() return transport:isReady() end,
     send = function(kind, payload)
       if transport:isReady() then transport:send(kind, payload) end
@@ -1978,6 +1979,18 @@ handlers[CampaignWire.EVENTS] = function(_, msg)
   local from = Wire.id(msg.from)
   local envelope = CampaignWire.worldBatch(msg.envelope)
   if from and envelope then campaignBridge:onEvents(envelope) end
+end
+
+handlers[CampaignWire.ARCHIVE_READY] = function(_, msg)
+  if not campaignBridge or Config.PROTOCOL < 29 then return end
+  local ready = CampaignWire.worldArchiveEnd(msg)
+  if ready then campaignBridge:onArchiveReady(ready) end
+end
+
+handlers[CampaignWire.ARCHIVE_NEEDED] = function(_, msg)
+  if not campaignBridge or Config.PROTOCOL < 29 then return end
+  local needed = CampaignWire.worldArchiveEnd(msg)
+  if needed then campaignBridge:onArchiveNeeded(needed) end
 end
 
 handlers[CampaignWire.PREFIX] = function(_, msg)

@@ -1,9 +1,11 @@
 'use strict';
 
 const { randomBytes } = require('node:crypto');
+const { isDeepStrictEqual } = require('node:util');
 const { cleanId } = require('./sanitize');
 const {
   cleanWorldInventory, cleanWorldBatch, cleanWorldInvitation,
+  cleanWorldArchiveBegin, cleanWorldArchiveEnd,
   cleanWorldClosedPackage,
   cleanWorldPrefixFrame, cleanWorldPrefixFrameAck,
   cleanWorldSequenceRequest, cleanWorldSequenceGrant,
@@ -57,6 +59,70 @@ function advancesOwnActorHead(current, candidate, actor) {
 
 const WORLD_EVIDENCE_LIMIT = 4096;
 
+function notifyArchiveChange(relay) {
+  if (typeof relay.onCampaignChange !== 'function') return true;
+  return relay.onCampaignChange(exportArchive(relay)) !== false;
+}
+
+function recordArchiveEnvelope(state, envelope) {
+  if (!state.archiveEnvelopes) state.archiveEnvelopes = new Map();
+  if (!state.archiveEvents) state.archiveEvents = new Map();
+  for (const event of envelope.events) {
+    const previous = state.archiveEvents.get(event.id);
+    if (previous && !isDeepStrictEqual(previous, event)) return false;
+  }
+  for (const event of envelope.events) state.archiveEvents.set(event.id, event);
+  state.archiveEnvelopes.set(envelope.tag, envelope);
+  recordWorldEvidence(state, envelope.events);
+  return true;
+}
+
+function archiveCovers(frontier, events) {
+  for (const [actor, head] of Object.entries(frontier.heads)) {
+    for (let seq = 1; seq <= head; seq += 1) {
+      if (!events.has(`${actor}:${seq}`)) return false;
+    }
+  }
+  const positions = new Set();
+  for (const event of events.values()) {
+    if (event.owner === 'world' && event.position !== undefined) positions.add(event.position);
+  }
+  for (let position = 1; position <= frontier.timelineHead; position += 1) {
+    if (!positions.has(position)) return false;
+  }
+  return true;
+}
+
+function exportArchive(relay) {
+  return { schema: 1, worlds: [...relay.worldTimelines.values()].map((state) => ({
+    world: state.world, compatibility: state.compatibility,
+    frontier: state.frontier,
+    envelopes: [...(state.archiveEnvelopes || new Map()).values()],
+  })) };
+}
+
+function importArchive(relay, raw) {
+  if (!raw) return true;
+  if (raw.schema !== 1 || !Array.isArray(raw.worlds)) return false;
+  for (const row of raw.worlds) {
+    const frontier = cleanWorldFrontier(row && row.frontier);
+    if (!frontier || row.world !== frontier.world
+        || row.compatibility !== frontier.compatibility
+      || !Array.isArray(row.envelopes)) return false;
+    const state = makeWorldState(frontier, frontier);
+    let valid = true;
+    for (const rawEnvelope of row.envelopes) {
+      const envelope = cleanWorldBatch(rawEnvelope);
+      if (!envelope || !sameWorld(envelope, frontier)
+          || !recordArchiveEnvelope(state, envelope)) { valid = false; break; }
+    }
+    if (!valid || !archiveCovers(frontier, state.archiveEvents)) return false;
+    rebuildUncommittedEvidence(state);
+    relay.worldTimelines.set(state.key, state);
+  }
+  return true;
+}
+
 function recordWorldEvidence(state, events) {
   for (const event of events) {
     if (state.evidenceIds.has(event.id)
@@ -84,6 +150,17 @@ function pruneWorldEvidence(state) {
       if (actor) actor.delete(row.seq);
       if (row.position !== undefined) state.evidencePositions.delete(row.position);
     }
+  }
+}
+
+function rebuildUncommittedEvidence(state) {
+  state.evidenceIds = new Map(); state.evidenceActors = new Map();
+  state.evidencePositions = new Set(); state.evidenceCount = 0;
+  for (const envelope of (state.archiveEnvelopes || new Map()).values()) {
+    recordWorldEvidence(state, envelope.events.filter((event) =>
+      event.seq > (state.frontier.heads[event.actor] || 0)
+      || (event.position !== undefined
+        && event.position > state.frontier.timelineHead)));
   }
 }
 
@@ -129,16 +206,21 @@ function sameGrantBase(a, b) {
     && a.replicaRevision === b.replicaRevision);
 }
 
+function makeWorldState(inventory, frontier = null) {
+  const key = `${inventory.world}|${inventory.compatibility}`;
+  return { key, world: inventory.world, compatibility: inventory.compatibility,
+    head: inventory.timelineHead, frontier,
+    evidenceIds: new Map(), evidenceActors: new Map(),
+    evidencePositions: new Set(), evidenceCount: 0,
+    archiveEnvelopes: new Map(), archiveEvents: new Map(),
+    pending: null, queue: [], requests: new Set() };
+}
+
 function worldTimeline(relay, inventory, frontier = null) {
   const key = `${inventory.world}|${inventory.compatibility}`;
   let state = relay.worldTimelines.get(key);
   if (!state) {
-    state = { key, world: inventory.world, compatibility: inventory.compatibility,
-      head: inventory.timelineHead,
-      frontier: relay.protocol >= 19 ? frontier : null,
-      evidenceIds: new Map(), evidenceActors: new Map(),
-      evidencePositions: new Set(), evidenceCount: 0,
-      pending: null, queue: [], requests: new Set() };
+    state = makeWorldState(inventory, relay.protocol >= 19 ? frontier : null);
     relay.worldTimelines.set(key, state);
   } else if (relay.protocol < 19 && !state.pending
       && inventory.timelineHead > state.head) {
@@ -151,6 +233,35 @@ function sendAuthorityFrontier(relay, client, state) {
   if (relay.protocol >= 19 && state.frontier) {
     relay.send(client, 'mmo.world_frontier', { frontier: state.frontier });
   }
+}
+
+function replicaIsBehind(replica, authority) {
+  if (!sameWorld(replica, authority)
+      || replica.timelineHead > authority.timelineHead) return false;
+  for (const [actor, seq] of Object.entries(replica.heads)) {
+    if (seq > (authority.heads[actor] || 0)) return false;
+  }
+  return replica.timelineHead < authority.timelineHead
+    || Object.entries(authority.heads)
+      .some(([actor, seq]) => (replica.heads[actor] || 0) < seq);
+}
+
+function sendArchiveCatchup(relay, client, state, inventory) {
+  if (!replicaIsBehind(inventory, state.frontier)) return false;
+  const needed = new Set();
+  for (const [actor, head] of Object.entries(state.frontier.heads)) {
+    for (let seq = (inventory.heads[actor] || 0) + 1; seq <= head; seq += 1) {
+      needed.add(`${actor}:${seq}`);
+    }
+  }
+  for (const envelope of state.archiveEnvelopes.values()) {
+    if (envelope.events.some((event) => needed.has(event.id))) {
+      relay.send(client, 'mmo.world_events', {
+        from: 'campaign-authority', envelope,
+      });
+    }
+  }
+  return true;
 }
 
 function publishAuthorityFrontier(relay, state) {
@@ -222,6 +333,7 @@ function releaseWorldRequests(relay, client) {
 }
 
 function pruneWorldTimelines(relay, excludingId = null) {
+  if (relay.protocol >= 29) return;
   for (const [key, state] of relay.worldTimelines) {
     let occupied = false;
     for (const client of relay.clients.values()) {
@@ -233,6 +345,79 @@ function pruneWorldTimelines(relay, excludingId = null) {
     }
   }
 }
+
+
+handlers['mmo.world_archive_begin'] = (relay, client, msg) => {
+  if (relay.protocol < 29 || !client.ready) return;
+  if (relay.campaignArchiveCorrupt) {
+    relay.send(client, 'mmo.world_unavailable', { reason: 'archive_corrupt' });
+    return;
+  }
+  const begin = cleanWorldArchiveBegin(msg);
+  if (!begin) return;
+  const identity = { world: begin.inventory.world,
+    compatibility: begin.inventory.compatibility,
+    revision: begin.frontier.revision };
+  if (relay.worldTimelines.has(`${identity.world}|${identity.compatibility}`)) {
+    relay.send(client, 'mmo.world_archive_ready', identity);
+    return;
+  }
+  client.worldArchiveUpload = { ...begin, envelopes: [], events: new Map() };
+  relay.send(client, 'mmo.world_archive_needed', identity);
+};
+
+handlers['mmo.world_archive_batch'] = (relay, client, msg) => {
+  if (relay.protocol < 29 || !client.ready || !client.worldArchiveUpload) return;
+  const envelope = cleanWorldBatch(msg.envelope);
+  const upload = client.worldArchiveUpload;
+  if (!envelope || !sameWorld(envelope, upload.inventory)
+      || upload.envelopes.length >= upload.batches) {
+    client.worldArchiveUpload = null; return;
+  }
+  for (const event of envelope.events) {
+    const previous = upload.events.get(event.id);
+    if (previous && !isDeepStrictEqual(previous, event)) {
+      client.worldArchiveUpload = null; return;
+    }
+    upload.events.set(event.id, event);
+  }
+  upload.envelopes.push(envelope);
+};
+
+handlers['mmo.world_archive_end'] = (relay, client, msg) => {
+  if (relay.protocol < 29 || !client.ready || !client.worldArchiveUpload) return;
+  const end = cleanWorldArchiveEnd(msg);
+  const upload = client.worldArchiveUpload;
+  client.worldArchiveUpload = null;
+  if (!end || end.world !== upload.inventory.world
+      || end.compatibility !== upload.inventory.compatibility
+      || end.revision !== upload.frontier.revision
+      || upload.envelopes.length !== upload.batches) return;
+  const key = `${end.world}|${end.compatibility}`;
+  let state = relay.worldTimelines.get(key);
+  if (!state && !archiveCovers(upload.frontier, upload.events)) {
+    relay.send(client, 'mmo.world_unavailable', { reason: 'archive_incomplete' });
+    return;
+  }
+  if (!state) {
+    state = makeWorldState(upload.inventory, upload.frontier);
+    relay.worldTimelines.set(key, state);
+  }
+  for (const envelope of upload.envelopes) {
+    if (!recordArchiveEnvelope(state, envelope)) {
+      relay.send(client, 'mmo.world_unavailable', { reason: 'archive_conflict' });
+      return;
+    }
+  }
+  rebuildUncommittedEvidence(state);
+  if (!notifyArchiveChange(relay)) {
+    relay.worldTimelines.delete(key);
+    relay.campaignArchiveCorrupt = true;
+    relay.send(client, 'mmo.world_unavailable', { reason: 'archive_storage_failed' });
+    return;
+  }
+  relay.send(client, 'mmo.world_archive_ready', end);
+};
 
 handlers['mmo.world_advertise'] = (relay, client, msg) => {
   if (!client.ready) return;
@@ -256,7 +441,14 @@ handlers['mmo.world_advertise'] = (relay, client, msg) => {
   client.worldState = inventory;
   client.worldFrontier = frontier;
   client.worldAdmission = null;
-  const state = worldTimeline(relay, inventory, frontier);
+  const archiveKey = `${inventory.world}|${inventory.compatibility}`;
+  const state = relay.protocol >= 29
+    ? relay.worldTimelines.get(archiveKey)
+    : worldTimeline(relay, inventory, frontier);
+  if (!state) {
+    relay.send(client, 'mmo.world_unavailable', { reason: 'archive_required' });
+    return;
+  }
   if (relay.protocol >= 19) {
     const pending = state.pending;
     const advancesPosition = Boolean(pending && pending.published
@@ -267,15 +459,29 @@ handlers['mmo.world_advertise'] = (relay, client, msg) => {
     const advancesRecovered = advancesFromRelayedEvidence(state, frontier,
       inventory.player);
     if (advancesPosition || advancesActorHeads || advancesRecovered) {
+      const previousFrontier = state.frontier; const previousHead = state.head;
       state.frontier = frontier;
       state.head = frontier.timelineHead;
-      pruneWorldEvidence(state);
+      if (relay.protocol >= 29 && !notifyArchiveChange(relay)) {
+        state.frontier = previousFrontier; state.head = previousHead;
+        relay.campaignArchiveCorrupt = true;
+        relay.send(client, 'mmo.world_unavailable', {
+          reason: 'archive_storage_failed',
+        });
+        return;
+      }
+      rebuildUncommittedEvidence(state);
       publishAuthorityFrontier(relay, state);
     } else if (previousAdmission && sameFrontier(frontier, state.frontier)
         && previousAdmission.authorityRevision === state.frontier.revision
         && previousAdmission.grantBase.position === state.head + 1
         && previousAdmission.grantBase.baseDigest === state.frontier.canonicalDigest) {
       client.worldAdmission = previousAdmission;
+    } else if (relay.protocol >= 29 && replicaIsBehind(frontier, state.frontier)) {
+      sendArchiveCatchup(relay, client, state, inventory);
+      sendAuthorityFrontier(relay, client, state);
+    } else if (relay.protocol >= 29 && !sameFrontier(frontier, state.frontier)) {
+      relay.send(client, 'mmo.world_unavailable', { reason: 'archive_conflict' });
     } else {
       sendAuthorityFrontier(relay, client, state);
     }
@@ -353,7 +559,18 @@ handlers['mmo.world_events'] = (relay, client, msg) => {
     return;
   }
   if (relay.protocol >= 19) {
-    recordWorldEvidence(worldTimeline(relay, client.worldState), envelope.events);
+    const localState = worldTimeline(relay, client.worldState);
+    recordWorldEvidence(localState, envelope.events);
+    if (relay.protocol >= 29) {
+      if (!recordArchiveEnvelope(localState, envelope)) return;
+      if (!notifyArchiveChange(relay)) {
+        relay.campaignArchiveCorrupt = true;
+        relay.send(client, 'mmo.world_unavailable', {
+          reason: 'archive_storage_failed',
+        });
+        return;
+      }
+    }
   }
   for (const target of relay.clients.values()) {
     if (target.id !== client.id && target.ready
@@ -462,8 +679,10 @@ handlers['mmo.world_sequence_cancel'] = (relay, client, msg) => {
 };
 
 
-function initialize(relay) {
+function initialize(relay, archive) {
   if (!(relay.worldTimelines instanceof Map)) relay.worldTimelines = new Map();
+  if (relay.protocol >= 29) relay.campaignArchiveCorrupt = !importArchive(relay, archive);
 }
 
-module.exports = { handlers, initialize, releaseWorldRequests, pruneWorldTimelines };
+module.exports = { handlers, initialize, exportArchive,
+  releaseWorldRequests, pruneWorldTimelines };

@@ -269,9 +269,10 @@ function M.new(opts)
     players = 0,      -- of those, the ones that have been admitted
     sessions = {},    -- sessionId -> { a, b, kind }
     parties = {},     -- partyId -> { memberId, ... }
-    -- Ephemeral canonical-position authorities. Campaign journals remain on
-    -- participant saves; the hub holds only the active frontier and queue.
+    -- Durable campaign authorities. Protocol 29 persists these through the
+    -- hosting adapter; participant saves are replicas, never replacement canon.
     worldTimelines = {},
+    onCampaignChange = opts.onCampaignChange,
     -- Ranked PVP.  The board is what a rating *is* -- the hub owns it,
     -- because a client that owned its own score would simply write itself a
     -- better one -- and `matches` is the paperwork for one battle: who was
@@ -3772,6 +3773,21 @@ local function pruneWorldEvidence(state)
   end
 end
 
+local function rebuildUncommittedEvidence(state)
+  state.evidenceIds, state.evidenceActors, state.evidencePositions = {}, {}, {}
+  state.evidenceCount = 0
+  for _, tag in ipairs(state.archiveOrder or {}) do
+    local envelope, pending = state.archiveEnvelopes[tag], {}
+    for _, event in ipairs(envelope.events) do
+      if event.seq > (state.frontier.heads[event.actor] or 0)
+        or event.position and event.position > state.frontier.timelineHead then
+        pending[#pending + 1] = event
+      end
+    end
+    recordWorldEvidence(state, pending)
+  end
+end
+
 
 local function advancesFromRelayedEvidence(state, candidate, localActor)
   local current = state.frontier
@@ -3815,6 +3831,8 @@ local function worldTimeline(self, inventory, frontier)
       frontier = self.protocol >= 19 and frontier or nil,
       evidenceIds = {}, evidenceActors = {}, evidencePositions = {},
       evidenceCount = 0,
+      archiveEnvelopes = {}, archiveEvents = {},
+      archiveOrder = {},
       pending = nil, queue = {}, requests = {} }
     self.worldTimelines[key] = state
   elseif self.protocol < 19 and not state.pending
@@ -3824,10 +3842,134 @@ local function worldTimeline(self, inventory, frontier)
   return state
 end
 
+local function notifyCampaignChange(self)
+  if not self.onCampaignChange then return true end
+  return self.onCampaignChange(self:exportCampaignArchive()) ~= false
+end
+
+local function sameArchiveValue(left, right, seen)
+  if type(left) ~= type(right) then return false end
+  if type(left) ~= "table" then return left == right end
+  seen = seen or {}
+  if seen[left] == right then return true end
+  seen[left] = right
+  for key, value in pairs(left) do
+    if not sameArchiveValue(value, right[key], seen) then return false end
+  end
+  for key in pairs(right) do if left[key] == nil then return false end end
+  return true
+end
+
+local function recordArchiveEnvelope(state, envelope)
+  state.archiveEnvelopes, state.archiveEvents = state.archiveEnvelopes or {},
+    state.archiveEvents or {}
+  state.archiveOrder = state.archiveOrder or {}
+  for _, event in ipairs(envelope.events) do
+    local previous = state.archiveEvents[event.id]
+    if previous and not sameArchiveValue(previous, event) then return false end
+    if not previous then state.archiveEvents[event.id] = event end
+  end
+  if not state.archiveEnvelopes[envelope.tag] then
+    state.archiveOrder[#state.archiveOrder + 1] = envelope.tag
+    state.archiveEnvelopes[envelope.tag] = envelope
+  end
+  recordWorldEvidence(state, envelope.events)
+  return true
+end
+
+local function archiveCovers(frontier, events)
+  for actor, head in pairs(frontier.heads) do
+    for seq = 1, head do if not events[actor .. ":" .. tostring(seq)] then return false end end
+  end
+  local positions = {}
+  for _, event in pairs(events) do
+    if event.owner == "world" and event.position then positions[event.position] = true end
+  end
+  for position = 1, frontier.timelineHead do
+    if not positions[position] then return false end
+  end
+  return true
+end
+
+function M:exportCampaignArchive()
+  local worlds = {}
+  for _, state in pairs(self.worldTimelines) do
+    local envelopes = {}
+    for _, tag in ipairs(state.archiveOrder or {}) do
+      envelopes[#envelopes + 1] = state.archiveEnvelopes[tag]
+    end
+    worlds[#worlds + 1] = { world = state.world,
+      compatibility = state.compatibility, frontier = state.frontier,
+      envelopes = envelopes }
+  end
+  return { schema = 1, worlds = worlds }
+end
+
+function M:importCampaignArchive(raw)
+  if type(raw) ~= "table" or raw.schema ~= 1 or type(raw.worlds) ~= "table" then
+    self.campaignArchiveCorrupt = true
+    return false
+  end
+  for _, row in ipairs(raw.worlds) do
+    local frontier = CampaignWire.worldFrontier(row.frontier)
+    if frontier and row.world == frontier.world
+      and row.compatibility == frontier.compatibility
+      and type(row.envelopes) == "table" then
+      local state = worldTimeline(self, frontier, frontier)
+      local valid = true
+      for _, rawEnvelope in ipairs(row.envelopes) do
+        local envelope = CampaignWire.worldBatch(rawEnvelope)
+        if not envelope or not sameWorld(envelope, frontier)
+          or not recordArchiveEnvelope(state, envelope) then valid = false; break end
+      end
+      if not valid or not archiveCovers(frontier, state.archiveEvents) then
+        self.worldTimelines[state.key] = nil
+        self.campaignArchiveCorrupt = true
+        return false
+      end
+      rebuildUncommittedEvidence(state)
+    end
+  end
+  return true
+end
+
 local function sendAuthorityFrontier(self, client, state)
   if self.protocol >= 19 and state.frontier then
     send(client, CampaignWire.FRONTIER, { frontier = state.frontier })
   end
+end
+
+local function replicaIsBehind(replica, authority)
+  if not sameWorld(replica, authority)
+    or replica.timelineHead > authority.timelineHead then return false end
+  local behind = replica.timelineHead < authority.timelineHead
+  for actor, seq in pairs(replica.heads) do
+    if seq > (authority.heads[actor] or 0) then return false end
+  end
+  for actor, seq in pairs(authority.heads) do
+    if (replica.heads[actor] or 0) < seq then behind = true end
+  end
+  return behind
+end
+
+local function sendArchiveCatchup(self, client, state, inventory)
+  if not replicaIsBehind(inventory, state.frontier) then return false end
+  local needed = {}
+  for actor, head in pairs(state.frontier.heads) do
+    for seq = (inventory.heads[actor] or 0) + 1, head do
+      needed[actor .. ":" .. tostring(seq)] = true
+    end
+  end
+  for _, tag in ipairs(state.archiveOrder or {}) do
+    local envelope = state.archiveEnvelopes[tag]
+    local useful = false
+    for _, event in ipairs(envelope.events) do
+      if needed[event.id] then useful = true; break end
+    end
+    if useful then send(client, CampaignWire.EVENTS,
+      { from = "campaign-authority", envelope = envelope }) end
+  end
+  return true
 end
 
 local function worldRequestKey(clientId, request)
@@ -3910,6 +4052,7 @@ function M:releaseWorldRequests(client)
 end
 
 function M:pruneWorldTimelines(excludingId)
+  if self.protocol >= 29 then return end
   for key, state in pairs(self.worldTimelines) do
     local occupied = false
     for id, client in pairs(self.clients) do
@@ -3922,6 +4065,66 @@ function M:pruneWorldTimelines(excludingId)
       self.worldTimelines[key] = nil
     end
   end
+end
+
+handlers[CampaignWire.ARCHIVE_BEGIN] = function(self, client, msg)
+  if self.protocol < 29 or not client.ready then return end
+  if self.campaignArchiveCorrupt then
+    send(client, CampaignWire.UNAVAILABLE, { reason = "archive_corrupt" })
+    return
+  end
+  local begin = CampaignWire.worldArchiveBegin(msg)
+  if not begin then return end
+  local identity = { world = begin.inventory.world,
+    compatibility = begin.inventory.compatibility,
+    revision = begin.frontier.revision }
+  if self.worldTimelines[identity.world .. "|" .. identity.compatibility] then
+    send(client, CampaignWire.ARCHIVE_READY, identity)
+    return
+  end
+  begin.envelopes, begin.events = {}, {}
+  client.worldArchiveUpload = begin
+  send(client, CampaignWire.ARCHIVE_NEEDED, identity)
+end
+
+handlers[CampaignWire.ARCHIVE_BATCH] = function(self, client, msg)
+  local upload = self.protocol >= 29 and client.ready and client.worldArchiveUpload
+  local envelope = upload and CampaignWire.worldBatch(msg.envelope) or nil
+  if not envelope or not sameWorld(envelope, upload.inventory)
+    or #upload.envelopes >= upload.batches then client.worldArchiveUpload = nil; return end
+  for _, event in ipairs(envelope.events) do upload.events[event.id] = event end
+  upload.envelopes[#upload.envelopes + 1] = envelope
+end
+
+handlers[CampaignWire.ARCHIVE_END] = function(self, client, msg)
+  local upload = self.protocol >= 29 and client.ready and client.worldArchiveUpload
+  local ending = upload and CampaignWire.worldArchiveEnd(msg) or nil
+  client.worldArchiveUpload = nil
+  if not ending or ending.world ~= upload.inventory.world
+    or ending.compatibility ~= upload.inventory.compatibility
+    or ending.revision ~= upload.frontier.revision
+    or #upload.envelopes ~= upload.batches then return end
+  local key = ending.world .. "|" .. ending.compatibility
+  local state = self.worldTimelines[key]
+  if not state and not archiveCovers(upload.frontier, upload.events) then
+    send(client, CampaignWire.UNAVAILABLE, { reason = "archive_incomplete" })
+    return
+  end
+  state = state or worldTimeline(self, upload.inventory, upload.frontier)
+  for _, envelope in ipairs(upload.envelopes) do
+    if not recordArchiveEnvelope(state, envelope) then
+      send(client, CampaignWire.UNAVAILABLE, { reason = "archive_conflict" })
+      return
+    end
+  end
+  rebuildUncommittedEvidence(state)
+  if not notifyCampaignChange(self) then
+    self.worldTimelines[key] = nil
+    self.campaignArchiveCorrupt = true
+    send(client, CampaignWire.UNAVAILABLE, { reason = "archive_storage_failed" })
+    return
+  end
+  send(client, CampaignWire.ARCHIVE_READY, ending)
 end
 
 handlers[CampaignWire.ADVERTISE] = function(self, client, msg)
@@ -3945,7 +4148,13 @@ handlers[CampaignWire.ADVERTISE] = function(self, client, msg)
   local previousAdmission = client.worldAdmission
   client.worldState = inventory
   client.worldFrontier, client.worldAdmission = frontier, nil
-  local state = worldTimeline(self, inventory, frontier)
+  local state = self.protocol >= 29
+    and self.worldTimelines[inventory.world .. "|" .. inventory.compatibility]
+    or worldTimeline(self, inventory, frontier)
+  if not state then
+    send(client, CampaignWire.UNAVAILABLE, { reason = "archive_required" })
+    return
+  end
   if self.protocol >= 19 then
     local pending = state.pending
     local advancesPosition = pending and pending.published
@@ -3956,7 +4165,15 @@ handlers[CampaignWire.ADVERTISE] = function(self, client, msg)
     local advancesRecovered = advancesFromRelayedEvidence(state, frontier,
       inventory.player)
     if advancesPosition or advancesActorHeads or advancesRecovered then
+      local previousFrontier, previousHead = state.frontier, state.head
       state.frontier, state.head = frontier, frontier.timelineHead
+      if self.protocol >= 29 and not notifyCampaignChange(self) then
+        state.frontier, state.head = previousFrontier, previousHead
+        self.campaignArchiveCorrupt = true
+        send(client, CampaignWire.UNAVAILABLE,
+          { reason = "archive_storage_failed" })
+        return
+      end
       pruneWorldEvidence(state)
       publishAuthorityFrontier(self, state)
     elseif previousAdmission and sameFrontier(frontier, state.frontier)
@@ -3964,6 +4181,11 @@ handlers[CampaignWire.ADVERTISE] = function(self, client, msg)
       and previousAdmission.grantBase.position == state.head + 1
       and previousAdmission.grantBase.baseDigest == state.frontier.canonicalDigest then
       client.worldAdmission = previousAdmission
+    elseif self.protocol >= 29 and replicaIsBehind(frontier, state.frontier) then
+      sendArchiveCatchup(self, client, state, inventory)
+      sendAuthorityFrontier(self, client, state)
+    elseif self.protocol >= 29 and not sameFrontier(frontier, state.frontier) then
+      send(client, CampaignWire.UNAVAILABLE, { reason = "archive_conflict" })
     else
       sendAuthorityFrontier(self, client, state)
     end
@@ -4043,7 +4265,17 @@ handlers[CampaignWire.EVENTS] = function(self, client, msg)
     return
   end
   if self.protocol >= 19 then
-    recordWorldEvidence(worldTimeline(self, client.worldState), envelope.events)
+    local state = worldTimeline(self, client.worldState)
+    recordWorldEvidence(state, envelope.events)
+    if self.protocol >= 29 then
+      if not recordArchiveEnvelope(state, envelope) then return end
+      if not notifyCampaignChange(self) then
+        self.campaignArchiveCorrupt = true
+        send(client, CampaignWire.UNAVAILABLE,
+          { reason = "archive_storage_failed" })
+        return
+      end
+    end
   end
   for id, target in pairs(self.clients) do
     if id ~= client.id and target.ready and sameWorld(target.worldState, envelope) then
