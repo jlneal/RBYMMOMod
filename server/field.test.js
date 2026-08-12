@@ -11,10 +11,12 @@ function peer() {
 
 function connect(relay, name, map) {
   const wire = peer();
-  const id = relay.accept(wire);
-  relay.handle(id, { type: 'mmo.hello', proto: PROTOCOL, name, map, x: 1, y: 1 });
+  const ephemeralId = relay.accept(wire);
+  const playerId = Buffer.from(name).toString('hex').padEnd(32, '0').slice(0, 32);
+  relay.handle(ephemeralId, { type: 'mmo.hello', proto: PROTOCOL, name,
+    playerId, map, x: 1, y: 1 });
   wire.messages.length = 0;
-  return { id, wire };
+  return { id: playerId, wire };
 }
 
 function ground(map = 'ROUTE_1') {

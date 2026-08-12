@@ -63,7 +63,8 @@ local hub = Hub.new({ maxPlayers = 4 })
 local function connect(name)
   local wire = peer(); local client = assert(hub:accept(wire))
   hub:receive(client, { type = Wire.HELLO, proto = Config.PROTOCOL,
-    name = name, map = "ROUTE_1", x = 5, y = 5 })
+    name = name, playerId = string.rep(name:sub(1, 1):lower(), 32),
+    map = "ROUTE_1", x = 5, y = 5 })
   wire.messages = {}; return client, wire
 end
 local ann, annWire = connect("ANN")

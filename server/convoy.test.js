@@ -27,11 +27,13 @@ test('relay sanitizes convoy on hello and move', () => {
   const ann = peer();
   const annId = relay.accept(ann);
   relay.handle(annId, { type: 'mmo.hello', proto: PROTOCOL, name: 'ANN',
+    playerId: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     map: 'ROUTE_1', x: 1, y: 1,
     convoy: [{ species: 'PIKACHU', x: 0, y: 1, hp: 20 }] });
-  assert.equal(relay.clients.get(annId).convoy[0].hp, undefined);
-  relay.handle(annId, { type: 'mmo.move', map: 'ROUTE_1', x: 2, y: 1,
+  const playerId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  assert.equal(relay.clients.get(playerId).convoy[0].hp, undefined);
+  relay.handle(playerId, { type: 'mmo.move', map: 'ROUTE_1', x: 2, y: 1,
     convoy: [{ species: 'EEVEE', x: 1, y: 1, nickname: 'PRIVATE' }] });
-  assert.equal(relay.clients.get(annId).convoy[0].species, 'EEVEE');
-  assert.equal(relay.clients.get(annId).convoy[0].nickname, undefined);
+  assert.equal(relay.clients.get(playerId).convoy[0].species, 'EEVEE');
+  assert.equal(relay.clients.get(playerId).convoy[0].nickname, undefined);
 });

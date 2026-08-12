@@ -54,7 +54,8 @@ local function connect(name, map)
   local wire = peer()
   local client = assert(hub:accept(wire))
   hub:receive(client, { type = Wire.HELLO, proto = Config.PROTOCOL,
-    name = name, map = map, x = 1, y = 1 })
+    name = name, playerId = string.rep(name:sub(1, 1):lower(), 32),
+    map = map, x = 1, y = 1 })
   wire.messages = {}
   return client, wire
 end

@@ -3223,6 +3223,23 @@ local STRIP_ICON = 16
 -- this box, so the ally sprite shifts left with it. ty=7 keeps ty+th == 12.
 local FOE_HUD = { tx = 3, ty = 0, tw = 8, th = 5 }
 local ALLY_HUD = { tx = 9, ty = 7, tw = 8, th = 5 }
+local COOP_HUD = {
+  [1] = { x = 80, y = 56, w = 80, h = 40, player = true,
+          tx = 10, ty = 7, tw = 10, th = 5 },
+  [2] = { x = 0, y = 56, w = 80, h = 40, player = true,
+          tx = 0, ty = 7, tw = 10, th = 5 },
+  [3] = { x = 0, y = 0, w = 80, h = 32, player = false,
+          tx = 0, ty = 0, tw = 10, th = 4 },
+  [4] = { x = 80, y = 0, w = 80, h = 32, player = false,
+          tx = 10, ty = 0, tw = 10, th = 4 },
+}
+
+function M.hudLayout(index)
+  local at = COOP_HUD[index]
+  if not at then return nil end
+  return { x = at.x, y = at.y, w = at.w, h = at.h,
+    player = at.player, scale = 1 }
+end
 
 M.STAGE_ALLY = STAGE_ALLY
 M.STAGE_FOE = STAGE_FOE
@@ -3634,6 +3651,19 @@ local function drawReadout(self, battler, panel, row, mine)
   end
 end
 
+function M:drawPanel(which)
+  local indexes = which == 1 and { 3, 4 } or { 2, 1 }
+  for _, index in ipairs(indexes) do
+    local battler = self:shownBattlerAt(index)
+    local slot = self.sim and self.sim:slot(index)
+    local panel = COOP_HUD[index]
+    if panel and battler and not hidden(slot, battler) then
+      engine.Font.drawBox(panel.tx, panel.ty, panel.tw, panel.th)
+      drawReadout(self, battler, panel, 1, index == self.mine)
+    end
+  end
+end
+
 function M:drawPanel(panel, which)
   local Font = engine.Font
   local rows = self:panelSlots(which)
@@ -3985,6 +4015,10 @@ function M:drawField()
     local ok = pcall(love.graphics.draw, self.trainerPic, 100, 0)
     if not ok then self.trainerPic = nil end
   end
+  if voxelActors and self.voxelShot.coopHudSnapped and not self.coopHudCapture then
+    self:drawIntroBalls()
+    return
+  end
   -- Strips after stage pics so a wide foe/ally sprite cannot cover an icon
   -- or its focus arrow when they share the edge.
   drawSideStrip(self, self:stripSeats(false), true, self:desiredAllyFocus())
@@ -4136,10 +4170,10 @@ function M:startAnim(row)
   return ok
 end
 
-local CLASSIC_PLAYER_CENTER = { x = CLASSIC_PLAYER.x + 28,
-                                y = CLASSIC_PLAYER.y + 28 }
-local CLASSIC_ENEMY_CENTER = { x = CLASSIC_ENEMY.x + 28,
-                               y = CLASSIC_ENEMY.y + 28 }
+-- Anim bytecode is authored around the stock 56px picture origins (8,40)
+-- and (88,0), independent of this screen's spotlight-stage anchors.
+local CLASSIC_PLAYER_CENTER = { x = 36, y = 68 }
+local CLASSIC_ENEMY_CENTER = { x = 116, y = 28 }
 
 function M:picCenterFor(index)
   local battler = self:shownBattlerAt(index)
@@ -4161,16 +4195,16 @@ function M:animSpriteOffset(row, sx, sy)
   local fx, fy
   if row then fx, fy = self:picCenterFor(row.from) end
   if not (fromSlot and fx) then return 0, 0 end
-  local classicFrom = self:foeSide(row.from)
-    and CLASSIC_ENEMY_CENTER or CLASSIC_PLAYER_CENTER
+  local classicFrom = fromSlot.side == "a"
+    and CLASSIC_PLAYER_CENTER or CLASSIC_ENEMY_CENTER
   local rigidX, rigidY = fx - classicFrom.x, fy - classicFrom.y
-  if not (toSlot and self:foeSide(row.to) ~= self:foeSide(row.from)) then
+  if not (toSlot and toSlot.side ~= fromSlot.side) then
     return rigidX, rigidY
   end
   local tx, ty = self:picCenterFor(row.to)
   if not tx then return rigidX, rigidY end
-  local classicTo = self:foeSide(row.to)
-    and CLASSIC_ENEMY_CENTER or CLASSIC_PLAYER_CENTER
+  local classicTo = toSlot.side == "a"
+    and CLASSIC_PLAYER_CENTER or CLASSIC_ENEMY_CENTER
   local vx, vy = classicTo.x - classicFrom.x, classicTo.y - classicFrom.y
   local denom = vx * vx + vy * vy
   if denom == 0 then return rigidX, rigidY end
