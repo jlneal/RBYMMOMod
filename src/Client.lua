@@ -2801,6 +2801,11 @@ function M.install()
   mod.exports.sharedWorldRejoinRequired = function()
     return campaignBridge and campaignBridge:membershipConsentRequired() or false
   end
+  mod.exports.sharedWorldAuthority = function()
+    return campaignBridge and campaignBridge:status()
+      or { connected = M.isConnected(), authorized = false, writable = false,
+        blocked = "campaign_state transport is unavailable" }
+  end
   mod.exports.rejoinSharedWorld = function()
     if not campaignBridge then return nil, "campaign_state transport is unavailable" end
     return campaignBridge:rejoinMembership()

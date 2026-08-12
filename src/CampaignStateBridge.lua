@@ -86,6 +86,10 @@ function M:install()
     available = function()
       return type(self.connected) ~= "function" or self.connected() == true
     end,
+    writable = function()
+      return (type(self.connected) ~= "function" or self.connected() == true)
+        and self.authorized == true and self.blocked == nil
+    end,
     request = function(_, actor, kind, subject, deliver)
       if type(self.connected) == "function" and self.connected() ~= true then
         return nil, "multiplayer transport is offline"
@@ -355,6 +359,15 @@ function M:active()
   if not self.api or type(self.api.status) ~= "function" then return false end
   local status = self.api.status()
   return type(status) == "table" and status.active == true
+end
+
+function M:status()
+  return { connected = type(self.connected) ~= "function" or self.connected() == true,
+    authorized = self.authorized == true, writable = self.authorized == true
+      and self.blocked == nil
+      and (type(self.connected) ~= "function" or self.connected() == true),
+    blocked = self.blocked, membershipPending = self.membershipPending == true,
+    rejoinRequired = self.rejoinRequired == true }
 end
 
 function M:certificationReceipt(context)

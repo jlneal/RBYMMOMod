@@ -56,6 +56,8 @@ local bridge = assert(Bridge.new({ foundation = foundation,
   send = function(kind, payload) sent[#sent + 1] = { kind = kind, payload = payload } end }))
 check(bridge:install(), "bridge attaches through campaign_state public API")
 check(attached and attached.authority, "bridge supplies an authority service")
+check(bridge:status().connected and not bridge:status().writable,
+  "transport presence alone does not claim campaign writability")
 check(type(attached.lifecycle) == "function",
   "bridge exposes checkpoint/save lifecycle reset to the framework")
 check(bridge:advertise(), "bridge advertises signed inventory")
@@ -71,6 +73,8 @@ check(tostring(earlyWhy):find("handshake") ~= nil,
   "a pre-acknowledgement refusal names the pending handshake")
 check(bridge:onReady({ world = "world-1", player = "ann" }),
   "matching hub acknowledgement admits this save identity")
+check(bridge:status().authorized and bridge:status().writable,
+  "authority diagnostics become writable only after admission")
 eq(bridge:onInventory("peer", { signed = "remote" }), 1,
   "framework plans missing signed batches")
 eq(sent[#sent].payload.to, "peer", "missing batch is directed to its peer")
@@ -106,6 +110,8 @@ check(tostring(overflowWhy):find("too many") ~= nil,
   "reservation capacity refusal is explicit")
 check(bridge:onUnavailable("authority_lost"),
   "authority loss drains outstanding reservations")
+check(not bridge:status().writable and bridge:status().blocked ~= nil,
+  "authority loss is immediately visible to shared campaign policy")
 check(tostring(pendingFailure):find("unavailable") ~= nil,
   "pending adapters receive the authority-loss reason")
 eq(next(bridge.pending), nil, "authority loss leaves no pending request leak")
@@ -212,6 +218,8 @@ eq(sent19[#sent19].kind, Bridge.FRONTIER_ACK,
 local echo = sent19[#sent19].payload.admission
 check(bridge19:onFrontierReady(echo),
   "exact hub echo makes protocol-19 authority writable")
+check(bridge19:status().writable,
+  "frontier admission is reflected by the public bridge status")
 local delivered19
 eq(attached19.authority:request("ann", "unique", "articuno",
   function(grant, why) delivered19 = grant or why end), "pending",
