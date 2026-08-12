@@ -370,7 +370,8 @@ handlers['mmo.world_archive_batch'] = (relay, client, msg) => {
   if (relay.protocol < 29 || !client.ready || !client.worldArchiveUpload) return;
   const envelope = cleanWorldBatch(msg.envelope);
   const upload = client.worldArchiveUpload;
-  if (!envelope || !sameWorld(envelope, upload.inventory)
+  if (!envelope || envelope.events.length !== 1
+      || !sameWorld(envelope, upload.inventory)
       || upload.envelopes.length >= upload.batches) {
     client.worldArchiveUpload = null; return;
   }

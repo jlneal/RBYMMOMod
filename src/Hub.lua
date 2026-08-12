@@ -4090,7 +4090,7 @@ end
 handlers[CampaignWire.ARCHIVE_BATCH] = function(self, client, msg)
   local upload = self.protocol >= 29 and client.ready and client.worldArchiveUpload
   local envelope = upload and CampaignWire.worldBatch(msg.envelope) or nil
-  if not envelope or not sameWorld(envelope, upload.inventory)
+  if not envelope or #envelope.events ~= 1 or not sameWorld(envelope, upload.inventory)
     or #upload.envelopes >= upload.batches then client.worldArchiveUpload = nil; return end
   for _, event in ipairs(envelope.events) do upload.events[event.id] = event end
   upload.envelopes[#upload.envelopes + 1] = envelope

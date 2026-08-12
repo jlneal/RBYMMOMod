@@ -130,7 +130,7 @@ function M.worldArchiveBegin(raw)
   if type(raw) ~= "table" then return nil end
   local inventory = M.worldInventory(raw.inventory)
   local frontier = M.worldFrontier and M.worldFrontier(raw.frontier) or nil
-  local batches = Wire.int(raw.batches, 0, 16384)
+  local batches = Wire.int(raw.batches, 0, 4096)
   if not (inventory and frontier and batches
     and inventory.world == frontier.world
     and inventory.compatibility == frontier.compatibility

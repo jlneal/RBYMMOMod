@@ -111,7 +111,7 @@ function cleanWorldArchiveBegin(value) {
   const inventory = cleanWorldInventory(value.inventory);
   const frontier = cleanWorldFrontier(value.frontier);
   const batches = Number.isSafeInteger(value.batches) && value.batches >= 0
-    && value.batches <= 16384 ? value.batches : null;
+    && value.batches <= 4096 ? value.batches : null;
   if (!inventory || !frontier || batches === null
       || inventory.world !== frontier.world
       || inventory.compatibility !== frontier.compatibility
